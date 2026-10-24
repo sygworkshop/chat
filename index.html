@@ -1,0 +1,1650 @@
+<!doctype html>
+<html lang="en" style="background:#0b0a10;color-scheme:dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+<meta name="theme-color" content="#0b0a10" />
+<title>Common Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github-dark.min.css" />
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: { ink:'#0b0a10', surface:'#13121b', raised:'#1b1a27', line:'#2b2a3f', fg:'#ecebf6', mute:'#9b99b8', accent:'#8b7cf6', 'accent-soft':'#2a2550', ok:'#5fd3a0', warn:'#f0b46a', bad:'#f07a8a' },
+    keyframes: { 'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } }, 'slide-in': { from: { transform: 'translateX(-100%)' }, to: { transform: 'translateX(0)' } }, pop: { from: { opacity: '0', transform: 'translateY(6px) scale(.98)' }, to: { opacity: '1', transform: 'none' } }, dot: { '0%,60%,100%': { transform: 'translateY(0)', opacity: '.4' }, '30%': { transform: 'translateY(-4px)', opacity: '1' } } },
+    animation: { 'fade-in': 'fade-in .2s ease-out', 'slide-in': 'slide-in .28s cubic-bezier(.22,1,.36,1)', pop: 'pop .18s ease-out', dot: 'dot 1.2s infinite' },
+    fontFamily: { display:['"Bricolage Grotesque"','system-ui','sans-serif'], sans:['Figtree','system-ui','sans-serif'] }
+  } }
+}
+</script>
+<style type="text/tailwindcss">
+  @layer components {
+    .field { @apply w-full rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5 text-sm text-fg placeholder:text-mute/70 transition focus:border-accent/70 focus:bg-white/[0.06] focus:outline-none; }
+    .btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50; }
+    .btn-primary { @apply btn text-white shadow-lg shadow-accent/25 hover:brightness-110 active:scale-[.98]; background-image: linear-gradient(180deg,#9a8dfa,#7360ea); }
+    .btn-quiet { @apply btn border border-white/10 bg-white/[0.05] text-fg hover:bg-white/[0.09]; }
+    .panel { @apply rounded-3xl border border-white/10 bg-surface/70 shadow-2xl shadow-black/40 backdrop-blur-xl; }
+  }
+</style>
+<style>
+html, body, #root { height: 100%; }
+@supports (height: 100dvh) { #root { height: 100dvh; } }
+body { margin: 0; color: #ecebf6; background: radial-gradient(900px 520px at 8% -8%, rgba(139,124,246,.20), transparent 60%), radial-gradient(760px 520px at 100% 108%, rgba(99,102,241,.16), transparent 60%), #0b0a10; background-attachment: fixed; -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid #8b7cf6; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+* { scrollbar-width: thin; scrollbar-color: #2b2a3f transparent; }
+.glass { background: rgba(19,18,27,.72); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.bubble-me { background: linear-gradient(135deg,#8b7cf6,#6a5ae0); color: #fff; box-shadow: 0 8px 20px -10px rgba(106,90,224,.8); }
+.bubble-them { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.07); }
+.logo-glow { box-shadow: 0 0 60px 8px rgba(139,124,246,.35); }
+  #boot { display:flex; height:100%; align-items:center; justify-content:center; font:500 15px system-ui,sans-serif; color:#9b99b8; }
+  #boot-error { white-space:pre-wrap; max-width:640px; margin:40px auto; padding:16px; border:1px solid #2b2a3f; border-radius:12px; background:#13121b; color:#f07a8a; font:13px/1.5 ui-monospace,monospace; }
+</style>
+</head>
+<body style="margin:0;background:#0b0a10;color:#ecebf6">
+<div id="root"><div id="boot">Loading Common Room…</div></div>
+<noscript><p style="color:#ecebf6;font-family:system-ui;padding:24px">Common Room needs JavaScript turned on.</p></noscript>
+
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.25.6/babel.min.js"></script>
+<script type="text/plain" id="app-src">
+import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'https://esm.sh/react@18.3.1'
+import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
+import { ArrowLeft, Ban, Check, CheckCheck, Menu, FileText, Flag, FolderKanban, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Reply, Search, Send, ShieldCheck, Sparkles, Trash2, Users, X } from 'https://esm.sh/lucide-react@0.441.0?deps=react@18.3.1'
+import hljs from 'https://esm.sh/highlight.js@11.10.0/lib/common'
+
+// ---- config (public values only; access is enforced by database security rules) ----
+const supabaseUrl = 'https://phgghrknsbqnfrlxpfmj.supabase.co'
+const supabaseKey = 'sb_publishable_hJcAjo0OaySSvjfchkO-fQ_xDXCnCnB'
+const configError: string | null = null
+const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: true, autoRefreshToken: true } })
+
+// ---- src/lib/types.ts ----
+type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'banned'
+interface Profile {
+  id: string
+  username: string
+  display_name: string
+  avatar_path: string | null
+  bio: string | null
+  approval_status: ApprovalStatus
+  rejection_reason: string | null
+  created_at: string
+}
+interface ConversationSummary {
+  id: string
+  type: 'direct' | 'group'
+  title: string | null
+  avatar_path: string | null
+  last_message_at: string | null
+  last_message_preview: string | null
+  unread_count: number
+  muted: boolean
+}
+
+interface DirectoryUser {
+  id: string
+  username: string
+  display_name: string
+  avatar_path: string | null
+}
+interface Message {
+  id: string
+  conversation_id: string
+  sender_id: string
+  content: string
+  message_type: 'text' | 'image' | 'file' | 'system' | 'assistant'
+  reply_to_message_id: string | null
+  created_at: string
+  updated_at: string
+  edited_at: string | null
+  deleted_at: string | null
+}
+interface Reaction { message_id: string; user_id: string; emoji: string }
+interface Attachment {
+  id: string
+  message_id: string
+  storage_path: string
+  file_name: string
+  mime_type: string
+  size_bytes: number
+}
+
+// ---- src/lib/images.ts ----
+/** Shrinks a photo in the browser before upload so shared images stay tiny (usually 100-400 KB). */
+async function compressImage(file: File, maxDim: number, quality = 0.8): Promise<File> {
+  const bmp = await createImageBitmap(file)
+  const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height))
+  const w = Math.max(1, Math.round(bmp.width * scale))
+  const h = Math.max(1, Math.round(bmp.height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas unavailable')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
+  ctx.drawImage(bmp, 0, 0, w, h)
+  bmp.close()
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
+  if (!blob) throw new Error('Could not encode image')
+  return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' })
+}
+
+// ---- src/lib/assistant.ts ----
+
+interface AssistantEvent {
+  conversation_id?: string | null
+  delta?: string
+  done?: boolean
+  error?: string
+}
+
+/** Calls the assistant-chat Edge Function and reads its event stream. Rejects with a user-safe message. */
+async function callAssistant(body: Record<string, unknown>, onEvent: (e: AssistantEvent) => void): Promise<void> {
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+  if (!token) throw new Error('You are signed out. Sign in again.')
+  let res: Response
+  try {
+    res = await fetch(`${supabaseUrl}/functions/v1/assistant-chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, apikey: supabaseKey },
+      body: JSON.stringify(body),
+    })
+  } catch {
+    throw new Error('Could not reach the assistant. Check your connection.')
+  }
+  if (!res.ok || !res.body) {
+    let msg = 'The assistant is unavailable right now.'
+    try { const j = await res.json(); if (typeof j.error === 'string') msg = j.error } catch { /* keep default */ }
+    throw new Error(msg)
+  }
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const parts = buf.split('\n\n')
+    buf = parts.pop() ?? ''
+    for (const part of parts) {
+      const line = part.trim()
+      if (!line.startsWith('data:')) continue
+      try { onEvent(JSON.parse(line.slice(5).trim()) as AssistantEvent) } catch { /* ignore partial frame */ }
+    }
+  }
+}
+
+// ---- src/features/auth/AuthProvider.tsx ----
+
+interface AuthState {
+  session: Session | null
+  profile: Profile | null
+  isAdmin: boolean
+  loading: boolean
+  refresh: () => Promise<void>
+  signOut: () => Promise<void>
+}
+const Ctx = createContext<AuthState | null>(null)
+
+function AuthProvider({ children }: { children: ReactNode }) {
+  const [session, setSession] = useState<Session | null>(null)
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async (s: Session | null) => {
+    if (!s) { setProfile(null); setIsAdmin(false); return }
+    const { data } = await supabase.from('profiles').select('*').eq('id', s.user.id).maybeSingle()
+    setProfile((data as Profile | null) ?? null)
+    const { data: adm } = await supabase.rpc('is_admin')
+    setIsAdmin(adm === true)
+  }, [])
+
+  useEffect(() => {
+    supabase.auth.getSession().then(async ({ data }) => {
+      setSession(data.session)
+      await load(data.session)
+      setLoading(false)
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s)
+      // Defer: calling Supabase inside this callback can deadlock the auth lock.
+      setTimeout(() => { void load(s) }, 0)
+    })
+    return () => sub.subscription.unsubscribe()
+  }, [load])
+
+  const refresh = useCallback(async () => { await load(session) }, [load, session])
+  const signOut = useCallback(async () => { await supabase.auth.signOut() }, [])
+
+  return <Ctx.Provider value={{ session, profile, isAdmin, loading, refresh, signOut }}>{children}</Ctx.Provider>
+}
+
+function useAuth() {
+  const v = useContext(Ctx)
+  if (!v) throw new Error('useAuth must be used inside AuthProvider')
+  return v
+}
+
+// ---- src/components/Avatar.tsx ----
+
+const cache = new Map<string, { url: string; at: number }>()
+
+function Avatar({ path, name, size = 40 }: { path?: string | null; name: string; size?: number }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    if (!path) { setUrl(null); return }
+    const hit = cache.get(path)
+    if (hit && Date.now() - hit.at < 50 * 60_000) { setUrl(hit.url); return }
+    supabase.storage.from('avatars').createSignedUrl(path, 3600).then(({ data }) => {
+      if (live && data?.signedUrl) { cache.set(path, { url: data.signedUrl, at: Date.now() }); setUrl(data.signedUrl) }
+    })
+    return () => { live = false }
+  }, [path])
+
+  const initials = name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('') || '?'
+  const style = { width: size, height: size }
+  return url ? (
+    <img src={url} alt="" style={style} className="shrink-0 rounded-full object-cover" />
+  ) : (
+    <div aria-hidden style={style} className="flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-accent/40 to-indigo-500/30 text-xs font-semibold text-white">{initials}</div>
+  )
+}
+
+// ---- src/components/Logo.tsx ----
+function Logo({ size = 32 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" className="shrink-0">
+      <defs>
+        <linearGradient id="cr-logo" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#a99dfc" />
+          <stop offset="1" stopColor="#5b49d6" />
+        </linearGradient>
+      </defs>
+      <rect width="32" height="32" rx="9" fill="url(#cr-logo)" />
+      <path d="M9 11.5A2.5 2.5 0 0 1 11.5 9h9a2.5 2.5 0 0 1 2.5 2.5v6a2.5 2.5 0 0 1-2.5 2.5H15l-4 3v-3h-.5A1.5 1.5 0 0 1 9 18.5z" fill="#fff" fillOpacity=".95" />
+    </svg>
+  )
+}
+
+// ---- src/components/Markdown.tsx ----
+
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+function CodeBlock({ code, lang }: { code: string; lang: string }) {
+  const [copied, setCopied] = useState(false)
+  const html = useMemo(() => {
+    try {
+      return lang && hljs.getLanguage(lang)
+        ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+        : hljs.highlightAuto(code).value
+    } catch { return esc(code) }
+  }, [code, lang])
+  async function copy() {
+    try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch { /* clipboard blocked */ }
+  }
+  return (
+    <div className="my-2 overflow-hidden rounded-lg border border-line bg-[#0d1117]">
+      <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-xs text-mute">
+        <span>{lang || 'code'}</span>
+        <button onClick={copy} className="rounded px-2 py-0.5 hover:bg-raised hover:text-fg">{copied ? 'Copied' : 'Copy code'}</button>
+      </div>
+      <pre className="overflow-x-auto p-3 text-[13px] leading-relaxed"><code className="hljs !bg-transparent !p-0" dangerouslySetInnerHTML={{ __html: html }} /></pre>
+    </div>
+  )
+}
+
+function inline(text: string): ReactNode[] {
+  return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((t, i) => {
+    if (t.startsWith('`') && t.endsWith('`') && t.length > 2) return <code key={i} className="rounded bg-raised px-1 py-0.5 text-[0.9em]">{t.slice(1, -1)}</code>
+    if (t.startsWith('**') && t.endsWith('**') && t.length > 4) return <strong key={i}>{t.slice(2, -2)}</strong>
+    return t
+  })
+}
+
+function blocks(text: string): ReactNode[] {
+  return text.split(/\n{2,}/).filter((b) => b.trim()).map((b, i) => {
+    const lines = b.split('\n')
+    if (lines.every((l) => /^\s*[-*] /.test(l))) return <ul key={i} className="my-2 list-disc space-y-1 pl-5">{lines.map((l, j) => <li key={j}>{inline(l.replace(/^\s*[-*] /, ''))}</li>)}</ul>
+    if (lines.every((l) => /^\s*\d+\. /.test(l))) return <ol key={i} className="my-2 list-decimal space-y-1 pl-5">{lines.map((l, j) => <li key={j}>{inline(l.replace(/^\s*\d+\. /, ''))}</li>)}</ol>
+    const h = /^(#{1,3}) (.*)$/.exec(lines[0])
+    if (h && lines.length === 1) return <p key={i} className="my-2 font-display text-base font-bold">{inline(h[2])}</p>
+    return <p key={i} className="my-2 whitespace-pre-wrap break-words">{inline(b)}</p>
+  })
+}
+
+function Markdown({ text }: { text: string }) {
+  const parts: ReactNode[] = []
+  const re = /```([\w+-]*)\n([\s\S]*?)(?:```|$)/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(...blocks(text.slice(last, m.index)))
+    parts.push(<CodeBlock key={`c${m.index}`} code={m[2].replace(/\n$/, '')} lang={m[1].toLowerCase()} />)
+    last = m.index + m[0].length
+    if (m[0].length === 0) re.lastIndex++
+  }
+  if (last < text.length) parts.push(...blocks(text.slice(last)))
+  return <div className="text-sm leading-relaxed">{parts}</div>
+}
+
+// ---- src/features/chat/Directory.tsx ----
+
+interface DirectoryState { users: Record<string, DirectoryUser>; list: DirectoryUser[]; reload: () => void }
+const DirCtx = createContext<DirectoryState>({ users: {}, list: [], reload: () => {} })
+
+function DirectoryProvider({ children }: { children: ReactNode }) {
+  const [list, setList] = useState<DirectoryUser[]>([])
+  const reload = useCallback(() => {
+    supabase.from('profiles').select('id, username, display_name, avatar_path')
+      .eq('approval_status', 'approved').order('display_name')
+      .then(({ data }) => setList((data as DirectoryUser[] | null) ?? []))
+  }, [])
+  useEffect(() => { reload() }, [reload])
+  const users = Object.fromEntries(list.map((u) => [u.id, u]))
+  return <DirCtx.Provider value={{ users, list, reload }}>{children}</DirCtx.Provider>
+}
+
+const useDirectory = () => useContext(DirCtx)
+
+// ---- src/features/chat/NewChatDialog.tsx ----
+
+function NewChatDialog({ onClose, onOpen }: { onClose: () => void; onOpen: (conversationId: string, type: 'direct' | 'group') => void }) {
+  const { session } = useAuth()
+  const { list, users } = useDirectory()
+  const [q, setQ] = useState('')
+  const [picked, setPicked] = useState<string[]>([])
+  const [title, setTitle] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const people = list.filter((u) => u.id !== session?.user.id && `${u.display_name} ${u.username}`.toLowerCase().includes(q.toLowerCase()))
+  const isGroup = picked.length > 1
+  const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
+
+  async function start() {
+    if (picked.length === 0) return
+    setError(null)
+    if (isGroup && !title.trim()) return setError('Give the group a name.')
+    setBusy(true)
+    if (!isGroup) {
+      const { data, error } = await supabase.rpc('get_or_create_direct', { p_other: picked[0] })
+      setBusy(false)
+      if (error || !data) return setError('Could not start that chat. They may be unavailable.')
+      onOpen(data as string, 'direct')
+    } else {
+      const { data, error } = await supabase.rpc('create_group', { p_title: title.trim(), p_description: null, p_members: picked })
+      setBusy(false)
+      if (error || !data) return setError('Could not create the group.')
+      onOpen(data as string, 'group')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex animate-fade-in items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="New chat">
+      <div className="panel flex max-h-[88dvh] w-full max-w-md animate-pop flex-col rounded-b-none p-5 sm:rounded-b-3xl">
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-xl font-bold">New chat</h2>
+          <button onClick={onClose} aria-label="Close" className="rounded-xl p-2 text-mute hover:bg-white/5"><X size={18} /></button>
+        </div>
+        <p className="mt-1 text-sm text-mute">Pick one person to chat privately, or pick several to start a group.</p>
+
+        {picked.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {picked.map((id) => (
+              <button key={id} onClick={() => toggle(id)} className="flex items-center gap-1.5 rounded-full bg-accent/15 py-1 pl-1 pr-2.5 text-xs text-fg hover:bg-accent/25" aria-label={`Remove ${users[id]?.display_name ?? 'person'}`}>
+                <Avatar path={users[id]?.avatar_path} name={users[id]?.display_name ?? '?'} size={20} />{users[id]?.display_name}<X size={12} />
+              </button>
+            ))}
+          </div>
+        )}
+
+        <input className="field mt-3" placeholder="Search people" aria-label="Search people" value={q} onChange={(e) => setQ(e.target.value)} />
+        <ul className="mt-2 min-h-[8rem] flex-1 overflow-y-auto">
+          {people.length === 0 && <li className="p-3 text-sm text-mute">No one else is here yet. Approve a request from the Admin Bot first.</li>}
+          {people.map((u) => {
+            const on = picked.includes(u.id)
+            return (
+              <li key={u.id}>
+                <button onClick={() => toggle(u.id)} aria-pressed={on} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-white/5">
+                  <Avatar path={u.avatar_path} name={u.display_name} size={40} />
+                  <span className="min-w-0 flex-1 text-sm"><span className="block truncate font-medium">{u.display_name}</span><span className="block truncate text-xs text-mute">@{u.username}</span></span>
+                  <span className={`flex h-5 w-5 items-center justify-center rounded-full border ${on ? 'border-accent bg-accent text-white' : 'border-white/20'}`}>{on && <Check size={12} />}</span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+
+        {isGroup && <input className="field mt-3" placeholder="Group name" aria-label="Group name" value={title} maxLength={80} onChange={(e) => setTitle(e.target.value)} />}
+        {error && <p role="alert" className="mt-2 text-sm text-bad">{error}</p>}
+        <button className="btn-primary mt-3 w-full" onClick={start} disabled={busy || picked.length === 0}>
+          {busy ? 'Working…' : picked.length === 0 ? 'Select someone' : isGroup ? `Create group (${picked.length + 1} people)` : 'Start chat'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ---- src/features/chat/ChatView.tsx ----
+
+const PAGE = 40
+const EMOJIS = ['👍', '❤️', '😂', '🎉', '😮', '🙏']
+const ALLOWED_FILES = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/plain']
+const MAX_FILE = 3 * 1024 * 1024
+const urlCache = new Map<string, { url: string; at: number }>()
+
+interface Props {
+  convo: ConversationSummary
+  title: string
+  avatarPath: string | null
+  otherUserId: string | null
+  onBack: () => void
+  onRead: () => void
+}
+interface Member { user_id: string; role: string; last_read_at: string | null }
+interface Pinned { id: string; content: string; sender_id: string }
+
+function AttachmentView({ att }: { att: Attachment }) {
+  const [url, setUrl] = useState<string | null>(null)
+  const isImage = att.mime_type.startsWith('image/')
+  useEffect(() => {
+    if (!isImage) return
+    let live = true
+    const hit = urlCache.get(att.storage_path)
+    if (hit && Date.now() - hit.at < 50 * 60_000) { setUrl(hit.url); return }
+    supabase.storage.from('attachments').createSignedUrl(att.storage_path, 3600).then(({ data }) => {
+      if (data?.signedUrl) urlCache.set(att.storage_path, { url: data.signedUrl, at: Date.now() })
+      if (live) setUrl(data?.signedUrl ?? null)
+    })
+    return () => { live = false }
+  }, [att.storage_path, isImage])
+  async function open() {
+    const { data } = await supabase.storage.from('attachments').createSignedUrl(att.storage_path, 300, { download: att.file_name })
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank', 'noopener')
+  }
+  if (isImage) return url
+    ? <img src={url} alt={att.file_name} className="mt-1 max-h-72 max-w-full rounded-lg object-cover" loading="lazy" />
+    : <div className="mt-1 h-32 w-48 animate-pulse rounded-lg bg-raised" />
+  return (
+    <button onClick={open} className="mt-1 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-left text-sm hover:border-accent/60">
+      <FileText size={18} className="shrink-0 text-accent" />
+      <span className="min-w-0"><span className="block truncate">{att.file_name}</span><span className="text-xs text-mute">{(att.size_bytes / 1024).toFixed(0)} KB · tap to download</span></span>
+    </button>
+  )
+}
+
+function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Props) {
+  const { session } = useAuth()
+  const me = session!.user.id
+  const { users, list, reload: reloadDir } = useDirectory()
+  const usersRef = useRef(users); usersRef.current = users
+
+  const [msgs, setMsgs] = useState<Message[]>([])
+  const [reactions, setReactions] = useState<Reaction[]>([])
+  const [atts, setAtts] = useState<Attachment[]>([])
+  const [loading, setLoading] = useState(true)
+  const [hasMore, setHasMore] = useState(false)
+  const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [aiBusy, setAiBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [replyTo, setReplyTo] = useState<Message | null>(null)
+  const [editing, setEditing] = useState<Message | null>(null)
+  const [menuFor, setMenuFor] = useState<string | null>(null)
+  const [typing, setTyping] = useState<Record<string, number>>({})
+  const [, setTick] = useState(0)
+  const [panel, setPanel] = useState(false)
+  const [members, setMembers] = useState<Member[]>([])
+  const [pins, setPins] = useState<Pinned[]>([])
+  const [blocked, setBlocked] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<Message[] | null>(null)
+  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine)
+
+  const msgsRef = useRef(msgs); msgsRef.current = msgs
+  const bchRef = useRef<RealtimeChannel | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const stickRef = useRef(true)
+  const prependRef = useRef<number | null>(null)
+  const lastTypingSent = useRef(0)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const taRef = useRef<HTMLTextAreaElement>(null)
+
+  const isGroup = convo.type === 'group'
+  const myRole = members.find((m) => m.user_id === me)?.role
+  const canManage = isGroup && (myRole === 'owner' || myRole === 'admin')
+  const nameOf = useCallback((id: string) => usersRef.current[id]?.display_name ?? 'Someone', [])
+
+  const fetchExtras = useCallback(async (ids: string[]) => {
+    if (!ids.length) return
+    const [r, a] = await Promise.all([
+      supabase.from('message_reactions').select('message_id, user_id, emoji').in('message_id', ids),
+      supabase.from('attachments').select('id, message_id, storage_path, file_name, mime_type, size_bytes').in('message_id', ids),
+    ])
+    const set = new Set(ids)
+    setReactions((prev) => [...prev.filter((x) => !set.has(x.message_id)), ...((r.data as Reaction[] | null) ?? [])])
+    setAtts((prev) => [...prev.filter((x) => !set.has(x.message_id)), ...((a.data as Attachment[] | null) ?? [])])
+  }, [])
+
+  const loadPins = useCallback(async () => {
+    const { data: p } = await supabase.from('pinned_messages').select('message_id').eq('conversation_id', convo.id)
+    const ids = (p ?? []).map((x) => x.message_id as string)
+    if (!ids.length) return setPins([])
+    const { data: m } = await supabase.from('messages').select('id, content, sender_id').in('id', ids).is('deleted_at', null)
+    setPins(((m ?? []) as Pinned[]))
+  }, [convo.id])
+
+  const loadMembers = useCallback(async () => {
+    const { data } = await supabase.from('conversation_members').select('user_id, role, last_read_at').eq('conversation_id', convo.id)
+    setMembers((data as Member[] | null) ?? [])
+  }, [convo.id])
+
+  const markRead = useCallback(async () => {
+    if (document.visibilityState !== 'visible') return
+    const { data } = await supabase.rpc('mark_read', { p_cid: convo.id })
+    const at = (data as string | null) ?? new Date().toISOString()
+    setMembers((prev) => prev.map((m) => (m.user_id === me ? { ...m, last_read_at: at } : m)))
+    void bchRef.current?.send({ type: 'broadcast', event: 'read', payload: { user_id: me, at } })
+    onRead()
+  }, [convo.id, me, onRead])
+
+  const signalRefresh = useCallback(() => {
+    void bchRef.current?.send({ type: 'broadcast', event: 'refresh', payload: {} })
+  }, [])
+
+  // initial load
+  useEffect(() => {
+    let live = true
+    setMsgs([]); setReactions([]); setAtts([]); setLoading(true); setReplyTo(null); setEditing(null); setError(null)
+    stickRef.current = true
+    void (async () => {
+      const { data, error } = await supabase.from('messages').select('*').eq('conversation_id', convo.id)
+        .order('created_at', { ascending: false }).limit(PAGE)
+      if (!live) return
+      if (error) { setError('Could not load messages. Check your connection.'); setLoading(false); return }
+      const rows = ((data as Message[] | null) ?? []).reverse()
+      setMsgs(rows); setHasMore((data?.length ?? 0) === PAGE)
+      await fetchExtras(rows.map((m) => m.id))
+      if (!live) return
+      setLoading(false)
+      void markRead(); void loadPins(); void loadMembers()
+    })()
+    return () => { live = false }
+  }, [convo.id, fetchExtras, markRead, loadPins, loadMembers])
+
+  // realtime: row changes (RLS-checked) + private broadcast (typing and refresh signals)
+  useEffect(() => {
+    const catchUp = async () => {
+      const latest = msgsRef.current[msgsRef.current.length - 1]?.created_at
+      if (!latest) return
+      const { data } = await supabase.from('messages').select('*').eq('conversation_id', convo.id).gt('created_at', latest).order('created_at')
+      const rows = (data as Message[] | null) ?? []
+      if (!rows.length) return
+      setMsgs((prev) => { const seen = new Set(prev.map((m) => m.id)); return [...prev, ...rows.filter((m) => !seen.has(m.id))] })
+      void fetchExtras(rows.map((m) => m.id)); void markRead()
+    }
+    const rows = supabase.channel(`rows:${convo.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${convo.id}` }, (p) => {
+        const m = p.new as Message
+        setMsgs((prev) => prev.some((x) => x.id === m.id) ? prev : [...prev, m])
+        if (!usersRef.current[m.sender_id]) reloadDir()
+        setTyping((t) => { const n = { ...t }; delete n[m.sender_id]; return n })
+        void fetchExtras([m.id])
+        if (m.sender_id !== me) void markRead()
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${convo.id}` }, (p) => {
+        const m = p.new as Message
+        setMsgs((prev) => prev.map((x) => x.id === m.id ? { ...x, ...m } : x))
+      })
+      .subscribe((status) => { if (status === 'SUBSCRIBED') void catchUp() })
+    const bch = supabase.channel(`conversation:${convo.id}`, { config: { private: true } })
+      .on('broadcast', { event: 'refresh' }, () => { void fetchExtras(msgsRef.current.slice(-100).map((m) => m.id)); void loadPins() })
+      .on('broadcast', { event: 'read' }, ({ payload }) => {
+        const p = payload as { user_id?: string; at?: string }
+        const uid = p.user_id, at = p.at
+        if (uid && at && uid !== me) setMembers((prev) => prev.map((m) => (m.user_id === uid ? { ...m, last_read_at: at } : m)))
+      })
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        const id = (payload as { user_id?: string }).user_id
+        if (id && id !== me) setTyping((p) => ({ ...p, [id]: Date.now() }))
+      })
+      .subscribe()
+    bchRef.current = bch
+    const tick = setInterval(() => setTick((t) => t + 1), 1500)
+    const on = () => setOnline(true), off = () => setOnline(false)
+    window.addEventListener('online', on); window.addEventListener('offline', off)
+    return () => {
+      clearInterval(tick); window.removeEventListener('online', on); window.removeEventListener('offline', off)
+      bchRef.current = null
+      void supabase.removeChannel(rows); void supabase.removeChannel(bch)
+    }
+  }, [convo.id, me, fetchExtras, markRead, loadPins, reloadDir])
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') void markRead() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [markRead])
+
+  useEffect(() => {
+    if (!otherUserId) return
+    supabase.from('blocks').select('blocked_id').eq('blocker_id', me).eq('blocked_id', otherUserId).maybeSingle().then(({ data }) => setBlocked(!!data))
+  }, [otherUserId, me])
+
+  // scroll management
+  useLayoutEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    if (prependRef.current !== null) { el.scrollTop += el.scrollHeight - prependRef.current; prependRef.current = null; return }
+    if (stickRef.current) el.scrollTop = el.scrollHeight
+  }, [msgs.length, loading, typing])
+
+  async function loadOlder() {
+    const first = msgs[0]
+    if (!first) return
+    const { data } = await supabase.from('messages').select('*').eq('conversation_id', convo.id)
+      .lt('created_at', first.created_at).order('created_at', { ascending: false }).limit(PAGE)
+    const older = ((data as Message[] | null) ?? []).reverse()
+    prependRef.current = listRef.current?.scrollHeight ?? 0
+    setMsgs((prev) => { const seen = new Set(prev.map((m) => m.id)); return [...older.filter((m) => !seen.has(m.id)), ...prev] })
+    setHasMore((data?.length ?? 0) === PAGE)
+    void fetchExtras(older.map((m) => m.id))
+  }
+
+  function onScroll() {
+    const el = listRef.current
+    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
+
+  function confirmAi(): boolean {
+    try { if (localStorage.getItem('commonroom-ai-notice') === '1') return true } catch { /* storage blocked */ }
+    const ok = window.confirm('The assistant will send the last 30 messages of this chat to Groq, an external AI service, to write its answer. Continue?')
+    if (ok) { try { localStorage.setItem('commonroom-ai-notice', '1') } catch { /* storage blocked */ } }
+    return ok
+  }
+
+  async function askAssistant(prompt: string) {
+    if (!prompt) return
+    setAiBusy(true)
+    try { await callAssistant({ mode: 'group', group_conversation_id: convo.id, message: prompt }, () => {}) }
+    catch (e) { setError(e instanceof Error ? e.message : 'The assistant is unavailable.') }
+    finally { setAiBusy(false) }
+  }
+
+  async function send() {
+    const content = text.trim()
+    if (!content || sending) return
+    setError(null)
+    if (editing) {
+      setSending(true)
+      const { error } = await supabase.from('messages').update({ content }).eq('id', editing.id)
+      if (error) setError('Could not edit that message.')
+      else setMsgs((prev) => prev.map((m) => m.id === editing.id ? { ...m, content, edited_at: new Date().toISOString() } : m))
+      setEditing(null); setText(''); setSending(false)
+      return
+    }
+    const wantsAi = /^@assistant\b/i.test(content)
+    if (wantsAi && !confirmAi()) return
+    setSending(true)
+    const { data, error } = await supabase.from('messages')
+      .insert({ conversation_id: convo.id, sender_id: me, content, reply_to_message_id: replyTo?.id ?? null }).select('*').single()
+    setSending(false)
+    if (error || !data) return setError('Message not sent. Check your connection and try again.')
+    stickRef.current = true
+    setMsgs((prev) => prev.some((x) => x.id === data.id) ? prev : [...prev, data as Message])
+    setText(''); setReplyTo(null)
+    if (wantsAi) void askAssistant(content.replace(/^@assistant\b[:,]?\s*/i, ''))
+  }
+
+  async function sendFile(picked: File | undefined) {
+    if (!picked) return
+    if (!ALLOWED_FILES.includes(picked.type)) return setError('Use an image, PDF, or text file. For anything else, share a link.')
+    setSending(true); setError(null)
+    let file = picked
+    if (picked.type.startsWith('image/')) {
+      try { file = await compressImage(picked, 1600, 0.8) } catch { setSending(false); return setError('Could not read that image.') }
+    }
+    if (file.size > MAX_FILE) { setSending(false); return setError('Files must be 3 MB or smaller. Share a link for bigger ones.') }
+    const { data: msg, error: e1 } = await supabase.from('messages').insert({
+      conversation_id: convo.id, sender_id: me, content: '', message_type: file.type.startsWith('image/') ? 'image' : 'file', reply_to_message_id: replyTo?.id ?? null,
+    }).select('*').single()
+    if (e1 || !msg) { setSending(false); return setError('Could not send the file.') }
+    const path = `${convo.id}/${msg.id}-${file.name.replace(/[^\w.-]+/g, '_').slice(-80)}`
+    const up = await supabase.storage.from('attachments').upload(path, file, { contentType: file.type, cacheControl: '3600' })
+    const overQuota = !!up.error && /row-level security|policy|exceed/i.test(up.error.message)
+    let ok = !up.error
+    if (ok) {
+      const { error: e3 } = await supabase.from('attachments').insert({
+        message_id: msg.id, conversation_id: convo.id, uploader_id: me, storage_path: path,
+        file_name: file.name.slice(0, 200), mime_type: file.type, size_bytes: file.size,
+      })
+      ok = !e3
+    }
+    stickRef.current = true
+    if (!ok) {
+      await supabase.from('messages').update({ deleted_at: new Date().toISOString() }).eq('id', msg.id)
+      setMsgs((prev) => [...prev, { ...(msg as Message), content: '', deleted_at: new Date().toISOString() }])
+      setError(overQuota ? 'You have used your 50 MB file allowance. Share a link instead, or delete older files.' : 'Upload failed. Try again.')
+    } else {
+      setMsgs((prev) => prev.some((x) => x.id === msg.id) ? prev : [...prev, msg as Message])
+      await fetchExtras([msg.id]); signalRefresh(); setReplyTo(null)
+    }
+    setSending(false)
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  async function toggleReaction(m: Message, emoji: string) {
+    setMenuFor(null)
+    const mine = reactions.some((r) => r.message_id === m.id && r.user_id === me && r.emoji === emoji)
+    if (mine) {
+      await supabase.from('message_reactions').delete().eq('message_id', m.id).eq('user_id', me).eq('emoji', emoji)
+      setReactions((prev) => prev.filter((r) => !(r.message_id === m.id && r.user_id === me && r.emoji === emoji)))
+    } else {
+      const { error } = await supabase.from('message_reactions').insert({ message_id: m.id, conversation_id: convo.id, user_id: me, emoji })
+      if (!error) setReactions((prev) => [...prev, { message_id: m.id, user_id: me, emoji }])
+    }
+    signalRefresh()
+  }
+
+  async function deleteMsg(m: Message) {
+    setMenuFor(null)
+    if (!window.confirm('Delete this message for everyone?')) return
+    const { error } = await supabase.from('messages').update({ deleted_at: new Date().toISOString() }).eq('id', m.id)
+    if (error) setError('Could not delete that message.')
+    else setMsgs((prev) => prev.map((x) => x.id === m.id ? { ...x, content: '', deleted_at: new Date().toISOString() } : x))
+  }
+
+  async function togglePin(m: Message) {
+    setMenuFor(null)
+    if (pins.some((p) => p.id === m.id)) await supabase.from('pinned_messages').delete().eq('message_id', m.id)
+    else await supabase.from('pinned_messages').insert({ message_id: m.id, conversation_id: convo.id, pinned_by: me })
+    await loadPins(); signalRefresh()
+  }
+
+  async function report(m: Message) {
+    setMenuFor(null)
+    const reason = window.prompt('What is wrong with this message? Admins will review it.')
+    if (!reason?.trim()) return
+    const { error } = await supabase.rpc('report_message', { p_message: m.id, p_reason: reason.trim() })
+    setError(error ? 'Could not send your report.' : null)
+    if (!error) window.alert('Thanks. An admin will take a look.')
+  }
+
+  async function toggleBlock() {
+    if (!otherUserId) return
+    if (blocked) await supabase.from('blocks').delete().eq('blocker_id', me).eq('blocked_id', otherUserId)
+    else if (window.confirm('Block this person? Neither of you will be able to message the other.')) await supabase.from('blocks').insert({ blocker_id: me, blocked_id: otherUserId })
+    const { data } = await supabase.from('blocks').select('blocked_id').eq('blocker_id', me).eq('blocked_id', otherUserId).maybeSingle()
+    setBlocked(!!data)
+  }
+
+  async function addMember(id: string) {
+    const { error } = await supabase.from('conversation_members').insert({ conversation_id: convo.id, user_id: id, role: 'member' })
+    if (error) setError('Could not add that person.')
+    await loadMembers()
+  }
+  async function removeMember(id: string) {
+    if (!window.confirm(id === me ? 'Leave this group?' : 'Remove this person from the group?')) return
+    const { error } = await supabase.from('conversation_members').delete().eq('conversation_id', convo.id).eq('user_id', id)
+    if (error) setError('Could not remove that person.')
+    if (id === me) onBack(); else await loadMembers()
+  }
+
+  async function runSearch() {
+    const q = query.trim()
+    if (!q) return setResults(null)
+    const { data } = await supabase.from('messages').select('*').eq('conversation_id', convo.id).is('deleted_at', null)
+      .textSearch('fts', q, { type: 'websearch', config: 'simple' }).order('created_at', { ascending: false }).limit(30)
+    setResults((data as Message[] | null) ?? [])
+  }
+
+  function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
+    if (e.key === 'Escape') { setReplyTo(null); setEditing(null); setText('') }
+  }
+  function onType(v: string) {
+    setText(v)
+    if (Date.now() - lastTypingSent.current > 2500) {
+      lastTypingSent.current = Date.now()
+      void bchRef.current?.send({ type: 'broadcast', event: 'typing', payload: { user_id: me } })
+    }
+  }
+
+  const byId = useMemo(() => new Map(msgs.map((m) => [m.id, m])), [msgs])
+  const typingNames = Object.entries(typing).filter(([id, t]) => id !== me && Date.now() - t < 4000).map(([id]) => nameOf(id))
+  const nonMembers = list.filter((u) => !members.some((m) => m.user_id === u.id))
+  const others = members.filter((m) => m.user_id !== me)
+  const seenBy = (m: Message) => others.filter((o) => o.last_read_at && Date.parse(o.last_read_at) >= Date.parse(m.created_at))
+  const lastMineId = [...msgs].reverse().find((m) => m.sender_id === me && !m.deleted_at && m.message_type !== 'assistant')?.id
+  const seenLabel = (m: Message) => {
+    const s = seenBy(m)
+    if (!s.length) return 'Sent'
+    if (!isGroup) return 'Seen'
+    if (s.length === others.length) return 'Seen by everyone'
+    return s.length <= 2 ? `Seen by ${s.map((x) => nameOf(x.user_id)).join(', ')}` : `Seen by ${s.length}`
+  }
+
+  useEffect(() => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 128) + 'px'
+  }, [text])
+
+  return (
+    <div className="relative flex h-full min-w-0">
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header className="glass flex items-center gap-3 border-b border-white/5 px-3 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:pt-2.5">
+          <button onClick={onBack} aria-label="Back to chats" className="rounded-xl p-2 text-fg transition hover:bg-white/5 md:hidden"><ArrowLeft size={20} /></button>
+          <Avatar path={avatarPath} name={title} size={40} />
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-[15px] font-semibold leading-tight">{title}</h2>
+            <p className={`truncate text-xs ${typingNames.length ? 'text-accent' : 'text-mute'}`} aria-live="polite">
+              {typingNames.length ? (isGroup ? `${typingNames.join(', ')} typing…` : 'typing…') : isGroup ? `${members.length || ''} members` : 'Private chat'}
+            </p>
+          </div>
+          <button onClick={() => setSearchOpen((v) => !v)} aria-label="Search messages" className="rounded-xl p-2.5 text-mute transition hover:bg-white/5 hover:text-fg"><Search size={18} /></button>
+          <button onClick={() => setPanel((v) => !v)} aria-label="Chat details" aria-pressed={panel} className={`rounded-xl p-2.5 transition hover:bg-white/5 ${panel ? 'text-accent' : 'text-mute hover:text-fg'}`}><Users size={18} /></button>
+        </header>
+
+        {searchOpen && (
+          <div className="animate-pop border-b border-white/5 p-3">
+            <form onSubmit={(e) => { e.preventDefault(); void runSearch() }} className="flex gap-2">
+              <input className="field" autoFocus placeholder="Search this chat" aria-label="Search this chat" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <button className="btn-quiet">Search</button>
+            </form>
+            {results && (
+              <ul className="mt-2 max-h-48 divide-y divide-white/5 overflow-y-auto rounded-xl border border-white/10 text-sm">
+                {results.length === 0 && <li className="p-3 text-mute">No matches.</li>}
+                {results.map((r) => <li key={r.id} className="p-2.5"><span className="text-xs text-mute">{nameOf(r.sender_id)} · {new Date(r.created_at).toLocaleString()}</span><p className="break-words">{r.content}</p></li>)}
+              </ul>
+            )}
+          </div>
+        )}
+        {pins.length > 0 && (
+          <div className="flex items-center gap-2 border-b border-white/5 bg-accent/10 px-4 py-1.5 text-xs">
+            <Pin size={14} className="shrink-0 text-accent" /><span className="truncate"><strong>{nameOf(pins[0].sender_id)}:</strong> {pins[0].content}</span>
+            {pins.length > 1 && <span className="shrink-0 text-mute">+{pins.length - 1}</span>}
+          </div>
+        )}
+        {!online && <p role="status" className="bg-warn/15 px-3 py-1.5 text-center text-xs text-warn">You are offline. Messages will not send until you reconnect.</p>}
+
+        <div ref={listRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6">
+          <div className="mx-auto w-full max-w-3xl">
+            {hasMore && <button onClick={loadOlder} className="mx-auto mb-4 block rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-xs text-mute transition hover:text-fg">Load earlier messages</button>}
+            {loading && <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className={`h-12 w-2/3 animate-pulse rounded-2xl bg-white/5 ${i % 2 ? 'ml-auto' : ''}`} />)}</div>}
+            {!loading && msgs.length === 0 && <p className="mx-auto mt-16 max-w-xs text-center text-sm text-mute">No messages yet. Say hello, or type <span className="text-accent">@assistant</span> and a question to ask the AI.</p>}
+            {msgs.map((m, i) => {
+              const mine = m.sender_id === me
+              const prev = msgs[i - 1]
+              const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString()
+              const isAi = m.message_type === 'assistant'
+              const sameRun = !!prev && !newDay && prev.sender_id === m.sender_id && prev.message_type !== 'assistant' && !isAi
+              const showName = !mine && isGroup && !sameRun
+              const rs = reactions.filter((r) => r.message_id === m.id)
+              const grouped = rs.map((r) => r.emoji).filter((e, idx, a) => a.indexOf(e) === idx)
+              const target = m.reply_to_message_id ? byId.get(m.reply_to_message_id) : undefined
+              const deleted = !!m.deleted_at
+              const seen = mine && !isAi && seenBy(m).length > 0
+              const bubble = isAi ? 'border border-accent/30 bg-accent/10' : mine ? 'bubble-me rounded-br-md' : 'bubble-them rounded-bl-md'
+              return (
+                <div key={m.id} className={`animate-pop ${sameRun ? 'mt-0.5' : 'mt-3'}`}>
+                  {newDay && <p className="mb-3 mt-5 text-center"><span className="rounded-full bg-white/5 px-3 py-1 text-xs text-mute">{new Date(m.created_at).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</span></p>}
+                  <div className={`group relative flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[85%] rounded-2xl px-3.5 py-2 sm:max-w-[70%] ${bubble} ${deleted ? 'opacity-60' : ''}`}>
+                      {showName && <p className="mb-0.5 text-xs font-semibold text-accent">{nameOf(m.sender_id)}</p>}
+                      {isAi && <p className="mb-1 flex items-center gap-1 text-xs font-semibold text-accent"><Sparkles size={12} />Assistant · asked by {mine ? 'you' : nameOf(m.sender_id)}</p>}
+                      {target && !deleted && <p className={`mb-1.5 truncate rounded-md border-l-2 bg-black/10 px-2 py-1 text-xs ${mine && !isAi ? 'border-white/60 text-white/85' : 'border-accent text-mute'}`}>{nameOf(target.sender_id)}: {target.deleted_at ? 'Deleted message' : target.content || `[${target.message_type}]`}</p>}
+                      {deleted ? <p className="text-sm italic">This message was deleted</p>
+                        : isAi ? <Markdown text={m.content} />
+                        : m.content && <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">{m.content}</p>}
+                      {!deleted && atts.filter((a) => a.message_id === m.id).map((a) => <AttachmentView key={a.id} att={a} />)}
+                      <p className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${mine && !isAi ? 'text-white/70' : 'text-mute'}`}>
+                        {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{m.edited_at && !deleted ? ' · edited' : ''}
+                        {mine && !isAi && !deleted && (seen ? <CheckCheck size={14} className="text-[#c8f7e3]" aria-label="Seen" /> : <Check size={14} aria-label="Sent" />)}
+                      </p>
+                    </div>
+                    {!deleted && <button onClick={() => setMenuFor(menuFor === m.id ? null : m.id)} aria-label="Message actions" className={`absolute top-0 rounded-full p-1.5 text-mute opacity-60 transition hover:bg-white/10 hover:opacity-100 focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${mine ? 'left-0 sm:left-4' : 'right-0 sm:right-4'}`}><MoreHorizontal size={16} /></button>}
+                    {menuFor === m.id && (
+                      <>
+                        <button aria-label="Close menu" className="fixed inset-0 z-10 cursor-default" onClick={() => setMenuFor(null)} />
+                        <div className={`glass absolute top-7 z-20 w-56 animate-pop rounded-2xl border border-white/10 bg-surface p-2 shadow-2xl ${mine ? 'right-8' : 'left-8'}`}>
+                          <div className="mb-1 flex justify-between px-1">{EMOJIS.map((e) => <button key={e} onClick={() => toggleReaction(m, e)} className="rounded-lg p-1 text-lg transition hover:scale-110 hover:bg-white/10" aria-label={`React ${e}`}>{e}</button>)}</div>
+                          <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => { setReplyTo(m); setMenuFor(null) }}><Reply size={14} />Reply</button>
+                          <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => togglePin(m)}><Pin size={14} />{pins.some((p) => p.id === m.id) ? 'Unpin' : 'Pin'}</button>
+                          {mine && m.message_type === 'text' && <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => { setEditing(m); setText(m.content); setMenuFor(null) }}><Pencil size={14} />Edit</button>}
+                          {mine && <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-bad hover:bg-white/5" onClick={() => deleteMsg(m)}><Trash2 size={14} />Delete</button>}
+                          {!mine && <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => report(m)}><Flag size={14} />Report</button>}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {grouped.length > 0 && (
+                    <div className={`mt-1 flex flex-wrap gap-1 ${mine ? 'justify-end' : 'justify-start'}`}>
+                      {grouped.map((e) => {
+                        const n = rs.filter((r) => r.emoji === e).length
+                        const iReacted = rs.some((r) => r.emoji === e && r.user_id === me)
+                        return <button key={e} onClick={() => toggleReaction(m, e)} aria-pressed={iReacted} className={`rounded-full border px-2 py-0.5 text-xs transition ${iReacted ? 'border-accent/60 bg-accent/20' : 'border-white/10 bg-white/5'}`}>{e} {n}</button>
+                      })}
+                    </div>
+                  )}
+                  {m.id === lastMineId && <p className="mt-0.5 text-right text-[11px] text-mute" aria-live="polite">{seenLabel(m)}</p>}
+                </div>
+              )
+            })}
+            {typingNames.length > 0 && (
+              <div className="mt-3 flex animate-pop justify-start" role="status" aria-label={`${typingNames.join(', ')} typing`}>
+                <div className="bubble-them flex items-center gap-2 rounded-2xl rounded-bl-md px-3.5 py-3">
+                  <span className="flex gap-1">{[0, 1, 2].map((i) => <span key={i} className="h-1.5 w-1.5 animate-dot rounded-full bg-mute" style={{ animationDelay: `${i * 0.18}s` }} />)}</span>
+                  {isGroup && <span className="text-xs text-mute">{typingNames.join(', ')}</span>}
+                </div>
+              </div>
+            )}
+            {aiBusy && <p role="status" className="mt-3 flex items-center gap-2 text-xs text-accent"><Sparkles size={14} />The assistant is writing a reply…</p>}
+          </div>
+        </div>
+
+        <footer className="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
+          <div className="mx-auto w-full max-w-3xl">
+            {(replyTo || editing) && (
+              <div className="mb-2 flex animate-pop items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs">
+                <span className="min-w-0 flex-1 truncate text-mute">{editing ? 'Editing message' : `Replying to ${nameOf(replyTo!.sender_id)}: ${replyTo!.content || `[${replyTo!.message_type}]`}`}</span>
+                <button aria-label="Cancel" onClick={() => { setReplyTo(null); setEditing(null); setText('') }}><X size={14} /></button>
+              </div>
+            )}
+            {error && <p role="alert" className="mb-2 text-sm text-bad">{error}</p>}
+            <div className="glass flex items-end gap-1 rounded-2xl border border-white/10 p-1.5 shadow-xl shadow-black/30">
+              <input ref={fileRef} type="file" hidden accept={ALLOWED_FILES.join(',')} onChange={(e) => void sendFile(e.target.files?.[0])} />
+              <button onClick={() => fileRef.current?.click()} disabled={sending || !!editing} aria-label="Attach a file" className="rounded-xl p-2.5 text-mute transition hover:bg-white/10 hover:text-fg disabled:opacity-40"><Paperclip size={20} /></button>
+              <button onClick={() => setText((t) => /^@assistant\b/i.test(t) ? t : `@assistant ${t}`)} disabled={!!editing} aria-label="Ask the AI assistant" title="Ask the AI assistant" className="rounded-xl p-2.5 text-accent transition hover:bg-white/10 disabled:opacity-40"><Sparkles size={20} /></button>
+              <textarea ref={taRef} value={text} onChange={(e) => onType(e.target.value)} onKeyDown={onKey} rows={1} maxLength={4000} aria-label="Message"
+                placeholder="Write a message" className="max-h-32 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2.5 text-[15px] text-fg placeholder:text-mute/70 focus:outline-none" />
+              <button onClick={() => void send()} disabled={sending || !text.trim()} aria-label={editing ? 'Save edit' : 'Send message'} className="btn-primary h-10 w-10 shrink-0 !rounded-xl !px-0"><Send size={18} /></button>
+            </div>
+          </div>
+        </footer>
+      </section>
+
+      {panel && (
+        <aside className="glass absolute inset-y-0 right-0 z-30 w-full max-w-xs animate-pop overflow-y-auto border-l border-white/10 bg-surface p-4 md:static md:z-auto md:animate-none" aria-label="Chat details">
+          <div className="flex items-center justify-between"><h3 className="font-display text-lg font-bold">Details</h3><button onClick={() => setPanel(false)} aria-label="Close details" className="rounded-xl p-2 hover:bg-white/5"><X size={18} /></button></div>
+          <h4 className="mt-4 text-xs font-semibold uppercase tracking-wide text-mute">{isGroup ? 'Members' : 'Person'}</h4>
+          <ul className="mt-2 space-y-1">
+            {members.map((m) => (
+              <li key={m.user_id} className="flex items-center gap-2 rounded-xl p-1.5 text-sm">
+                <Avatar path={users[m.user_id]?.avatar_path} name={nameOf(m.user_id)} size={32} />
+                <span className="min-w-0 flex-1 truncate">{nameOf(m.user_id)}{m.user_id === me ? ' (you)' : ''}</span>
+                <span className="text-xs text-mute">{m.role === 'member' ? '' : m.role}</span>
+                {isGroup && m.role !== 'owner' && (canManage || m.user_id === me) && <button className="text-xs text-bad" onClick={() => removeMember(m.user_id)}>{m.user_id === me ? 'Leave' : 'Remove'}</button>}
+              </li>
+            ))}
+          </ul>
+          {canManage && nonMembers.length > 0 && (
+            <label className="mt-3 block text-sm"><span className="mb-1 block text-mute">Add a member</span>
+              <select className="field" value="" onChange={(e) => e.target.value && void addMember(e.target.value)}>
+                <option value="">Choose…</option>{nonMembers.map((u) => <option key={u.id} value={u.id}>{u.display_name}</option>)}
+              </select></label>
+          )}
+          {!isGroup && otherUserId && <button className="btn-quiet mt-4 w-full" onClick={toggleBlock}><Ban size={16} />{blocked ? 'Unblock' : 'Block'} {nameOf(otherUserId)}</button>}
+          <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">Pinned</h4>
+          {pins.length === 0 ? <p className="mt-1 text-sm text-mute">Nothing pinned.</p> : <ul className="mt-2 space-y-2 text-sm">{pins.map((p) => <li key={p.id} className="rounded-xl bg-white/5 p-2.5"><span className="text-xs text-mute">{nameOf(p.sender_id)}</span><p className="break-words">{p.content}</p></li>)}</ul>}
+          <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">Shared files</h4>
+          {atts.length === 0 ? <p className="mt-1 text-sm text-mute">No files yet.</p> : <div className="mt-2 space-y-1">{atts.map((a) => <AttachmentView key={a.id} att={a} />)}</div>}
+        </aside>
+      )}
+    </div>
+  )
+}
+
+// ---- src/features/assistant/AssistantView.tsx ----
+
+interface Conv { id: string; title: string; updated_at: string }
+interface Msg { id: string; role: 'user' | 'assistant'; content: string }
+
+function AssistantView() {
+  const [convs, setConvs] = useState<Conv[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [msgs, setMsgs] = useState<Msg[]>([])
+  const [input, setInput] = useState('')
+  const [streaming, setStreaming] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const skipLoad = useRef(false)
+  const endRef = useRef<HTMLDivElement>(null)
+
+  const loadConvs = useCallback(async () => {
+    const { data } = await supabase.from('assistant_conversations').select('id, title, updated_at').order('updated_at', { ascending: false }).limit(50)
+    setConvs((data as Conv[] | null) ?? [])
+  }, [])
+
+  useEffect(() => { void loadConvs() }, [loadConvs])
+
+  useEffect(() => {
+    if (skipLoad.current) { skipLoad.current = false; return }
+    if (!activeId) { setMsgs([]); return }
+    let live = true
+    supabase.from('assistant_messages').select('id, role, content').eq('conversation_id', activeId).order('created_at')
+      .then(({ data }) => { if (live) setMsgs((data as Msg[] | null) ?? []) })
+    return () => { live = false }
+  }, [activeId])
+
+  useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }) }, [msgs.length, streaming])
+
+  async function send() {
+    const message = input.trim()
+    if (!message || busy) return
+    setError(null); setBusy(true); setInput(''); setStreaming('')
+    setMsgs((m) => [...m, { id: `local-${Date.now()}`, role: 'user', content: message }])
+    let acc = ''
+    try {
+      await callAssistant(
+        { mode: 'private', message, assistant_conversation_id: activeId ?? undefined },
+        (e) => {
+          if (e.conversation_id && !activeId) { skipLoad.current = true; setActiveId(e.conversation_id) }
+          if (e.delta) { acc += e.delta; setStreaming(acc) }
+          if (e.error) setError(e.error)
+        },
+      )
+      if (acc) setMsgs((m) => [...m, { id: `local-a-${Date.now()}`, role: 'assistant', content: acc }])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The assistant is unavailable.')
+    } finally {
+      setStreaming(''); setBusy(false); void loadConvs()
+    }
+  }
+
+  async function remove(id: string) {
+    if (!window.confirm('Delete this assistant conversation?')) return
+    await supabase.from('assistant_conversations').delete().eq('id', id)
+    if (id === activeId) { setActiveId(null); setMsgs([]) }
+    await loadConvs()
+  }
+
+  return (
+    <div className="flex h-full min-w-0 flex-col">
+      <header className="glass flex items-center gap-2 border-b border-white/5 p-3">
+        <Sparkles size={18} className="text-accent" />
+        <h2 className="font-display text-lg font-bold">AI Assistant</h2>
+        <select aria-label="Conversation" className="field ml-auto max-w-[45%] py-1.5" value={activeId ?? ''} onChange={(e) => setActiveId(e.target.value || null)}>
+          <option value="">New conversation</option>
+          {convs.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
+        </select>
+        <button className="btn-quiet !px-3" onClick={() => { setActiveId(null); setMsgs([]); setError(null) }} aria-label="Start a new conversation"><Plus size={16} /></button>
+        {activeId && <button className="btn-quiet !px-3" onClick={() => remove(activeId)} aria-label="Delete this conversation"><Trash2 size={16} /></button>}
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="mx-auto max-w-2xl space-y-4">
+          {msgs.length === 0 && !streaming && (
+            <div className="mt-10 text-center text-sm text-mute">
+              <p className="font-display text-lg font-bold text-fg">What are we building?</p>
+              <p className="mt-1">Ask for help with code, a database design, a bug, or a plan. Your messages go to Groq to generate the answer.</p>
+            </div>
+          )}
+          {msgs.map((m) => (
+            <div key={m.id} className={m.role === 'user' ? 'bubble-me ml-auto max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm' : 'max-w-full'}>
+              {m.role === 'user' ? <p className="whitespace-pre-wrap break-words">{m.content}</p> : <Markdown text={m.content} />}
+            </div>
+          ))}
+          {streaming && <Markdown text={streaming} />}
+          {busy && !streaming && <div className="h-4 w-24 animate-pulse rounded bg-raised" role="status" aria-label="Assistant is thinking" />}
+          <div ref={endRef} />
+        </div>
+      </div>
+
+      <footer className="p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {error && <p role="alert" className="mx-auto mb-2 max-w-2xl text-sm text-bad">{error}</p>}
+        <div className="mx-auto flex max-w-2xl items-end gap-2">
+          <textarea rows={1} maxLength={8000} aria-label="Message the assistant" placeholder="Ask anything" value={input} onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
+            className="field max-h-40 min-h-[44px] flex-1 resize-none" />
+          <button className="btn-primary h-11 w-11 !px-0" onClick={() => void send()} disabled={busy || !input.trim()} aria-label="Send"><Send size={18} /></button>
+        </div>
+      </footer>
+    </div>
+  )
+}
+
+// ---- src/features/approvals/AdminInbox.tsx ----
+
+interface Row {
+  id: string
+  applicant_id: string
+  intro: string | null
+  status: 'pending' | 'approved' | 'rejected'
+  created_at: string
+  decided_at: string | null
+  rejection_reason: string | null
+  profiles: { username: string; display_name: string; avatar_path: string | null } | null
+}
+
+function AdminInbox() {
+  const [rows, setRows] = useState<Row[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [rejecting, setRejecting] = useState<string | null>(null)
+  const [reason, setReason] = useState('')
+
+  const load = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('approval_requests')
+      .select('id, applicant_id, intro, status, created_at, decided_at, rejection_reason, profiles:applicant_id(username, display_name, avatar_path)')
+      .order('created_at', { ascending: false }).limit(100)
+    if (error) setError('Could not load requests.')
+    else setRows(data as unknown as Row[])
+  }, [])
+
+  useEffect(() => {
+    void load()
+    const ch = supabase.channel('approval-inbox')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'approval_requests' }, () => { void load() })
+      .subscribe()
+    return () => { void supabase.removeChannel(ch) }
+  }, [load])
+
+  async function decide(row: Row, decision: 'approved' | 'rejected') {
+    setBusyId(row.id); setError(null)
+    const { error } = await supabase.rpc('review_application', {
+      p_applicant: row.applicant_id, p_decision: decision, p_reason: decision === 'rejected' ? reason.trim() || null : null,
+    })
+    if (error) {
+      const m = error.message
+      setError(/already decided/.test(m) ? 'Someone else already reviewed this request.'
+        : /own application/.test(m) ? 'You cannot review your own request.'
+        : /not authorized/.test(m) ? 'Only approved admins can do that.'
+        : 'Something went wrong. Reload the page and try again.')
+    }
+    setBusyId(null); setRejecting(null); setReason('')
+    await load()
+  }
+
+  const pending = rows?.filter((r) => r.status === 'pending') ?? []
+  const decided = rows?.filter((r) => r.status !== 'pending') ?? []
+
+  return (
+    <section className="mx-auto w-full max-w-2xl p-4 sm:p-8">
+      <h2 className="font-display text-2xl font-bold">Admin Bot</h2>
+      <p className="mt-1 text-sm text-mute">Requests to join appear here. Approving someone makes them a member and, with the current setting, an admin too.</p>
+      {error && <p role="alert" className="mt-4 text-sm text-bad">{error}</p>}
+      {rows === null && <div className="mt-6 h-24 animate-pulse rounded-2xl bg-raised" />}
+      {rows && pending.length === 0 && <p className="mt-6 rounded-2xl border border-dashed border-line p-6 text-sm text-mute">No one is waiting. New requests show up here instantly.</p>}
+
+      <ul className="mt-6 space-y-3">
+        {pending.map((r) => (
+          <li key={r.id} className="panel p-4">
+            <div className="flex items-start gap-3">
+              <Avatar path={r.profiles?.avatar_path} name={r.profiles?.display_name ?? '?'} size={44} />
+              <div className="min-w-0 flex-1 text-sm">
+                <p className="font-semibold">New join request: @{r.profiles?.username} has asked for access.</p>
+                <p className="text-mute">{r.profiles?.display_name} · {new Date(r.created_at).toLocaleString()}</p>
+                {r.intro && <p className="mt-2 break-words">{r.intro}</p>}
+              </div>
+            </div>
+            {rejecting === r.id ? (
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <input className="field" placeholder="Reason (optional)" value={reason} maxLength={300} onChange={(e) => setReason(e.target.value)} />
+                <button className="btn-quiet" onClick={() => decide(r, 'rejected')} disabled={busyId === r.id}>Confirm decline</button>
+                <button className="btn-quiet" onClick={() => setRejecting(null)}>Cancel</button>
+              </div>
+            ) : (
+              <div className="mt-3 flex gap-2">
+                <button className="btn-primary" onClick={() => decide(r, 'approved')} disabled={busyId === r.id}><Check size={16} />Approve</button>
+                <button className="btn-quiet" onClick={() => setRejecting(r.id)} disabled={busyId === r.id}><X size={16} />Decline</button>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {decided.length > 0 && (
+        <>
+          <h3 className="mt-10 text-sm font-semibold text-mute">Reviewed</h3>
+          <ul className="mt-2 divide-y divide-line rounded-2xl border border-line">
+            {decided.map((r) => (
+              <li key={r.id} className="flex items-center gap-3 p-3 text-sm">
+                <Avatar path={r.profiles?.avatar_path} name={r.profiles?.display_name ?? '?'} size={32} />
+                <span className="min-w-0 flex-1 truncate">@{r.profiles?.username}</span>
+                <span className={r.status === 'approved' ? 'text-ok' : 'text-bad'}>{r.status === 'approved' ? 'Approved' : 'Declined'}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  )
+}
+
+// ---- src/features/auth/AuthScreen.tsx ----
+
+function AuthScreen() {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [username, setUsername] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [bio, setBio] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    setError(null); setNotice(null)
+    if (mode === 'signup') {
+      const u = username.trim().toLowerCase()
+      if (!/^[a-z0-9_]{3,24}$/.test(u)) return setError('Usernames are 3–24 characters: lowercase letters, numbers, and underscores.')
+      if (password.length < 8) return setError('Use a password with at least 8 characters.')
+      if (!displayName.trim()) return setError('Add the name people know you by.')
+    }
+    setBusy(true)
+    if (mode === 'signin') {
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) setError('Email or password is incorrect.')
+    } else {
+      const { data, error } = await supabase.auth.signUp({
+        email, password,
+        options: { data: { username: username.trim().toLowerCase(), display_name: displayName.trim(), bio: bio.trim() } },
+      })
+      if (error) setError(/database error|unique|duplicate/i.test(error.message) ? 'That username or email is already taken.' : error.message)
+      else if (!data.session) setNotice('Check your email to confirm your address, then sign in. An existing member will review your request after that.')
+    }
+    setBusy(false)
+  }
+
+  return (
+    <main className="flex min-h-full items-center justify-center overflow-y-auto p-4">
+      <div className="panel w-full max-w-md animate-pop p-7 sm:p-9">
+        <div className="logo-glow mb-5 w-fit rounded-[14px]"><Logo size={52} /></div>
+        <h1 className="font-display text-3xl font-bold tracking-tight">Common Room</h1>
+        <p className="mt-1.5 text-sm leading-relaxed text-mute">A private place to talk, share and build together. New members are approved by people already inside.</p>
+
+        <div role="tablist" className="mt-6 grid grid-cols-2 rounded-lg border border-line p-1 text-sm">
+          {(['signin', 'signup'] as const).map((m) => (
+            <button key={m} role="tab" aria-selected={mode === m} onClick={() => setMode(m)}
+              className={`rounded-md py-2 font-medium ${mode === m ? 'bg-raised text-fg' : 'text-mute'}`}>
+              {m === 'signin' ? 'Sign in' : 'Ask to join'}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={submit} className="mt-5 space-y-3">
+          {mode === 'signup' && (
+            <>
+              <label className="block text-sm"><span className="mb-1 block text-mute">Username</span>
+                <input className="field" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required maxLength={24} /></label>
+              <label className="block text-sm"><span className="mb-1 block text-mute">Display name</span>
+                <input className="field" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required maxLength={60} /></label>
+              <label className="block text-sm"><span className="mb-1 block text-mute">Who are you? (so people recognise you)</span>
+                <textarea className="field min-h-[72px]" value={bio} onChange={(e) => setBio(e.target.value)} maxLength={500} placeholder="e.g. Sam from college, met through Priya" /></label>
+            </>
+          )}
+          <label className="block text-sm"><span className="mb-1 block text-mute">Email</span>
+            <input className="field" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required /></label>
+          <label className="block text-sm"><span className="mb-1 block text-mute">Password</span>
+            <input className="field" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} required /></label>
+
+          {error && <p role="alert" className="text-sm text-bad">{error}</p>}
+          {notice && <p role="status" className="text-sm text-ok">{notice}</p>}
+          <button className="btn-primary w-full" disabled={busy}>{busy ? 'Working…' : mode === 'signin' ? 'Sign in' : 'Send request'}</button>
+        </form>
+      </div>
+    </main>
+  )
+}
+
+// ---- src/features/auth/PendingScreen.tsx ----
+
+function PendingScreen() {
+  const { profile, session, refresh, signOut } = useAuth()
+  const [uploading, setUploading] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [token, setToken] = useState('')
+  const [setupMode, setSetupMode] = useState<'bootstrap' | 'recover'>('bootstrap')
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const t = setInterval(() => { void refresh() }, 10_000)
+    return () => clearInterval(t)
+  }, [refresh])
+
+  if (!profile || !session) return null
+  const status = profile.approval_status
+
+  async function onPhoto(picked: File | undefined) {
+    if (!picked || !session) return
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(picked.type)) return setMsg('Choose a PNG, JPEG, or WebP image.')
+    setUploading(true); setMsg(null)
+    let file: File
+    try { file = await compressImage(picked, 512, 0.85) } catch { setUploading(false); return setMsg('Could not read that image.') }
+    const path = `${session.user.id}/avatar-${Date.now()}.jpg`
+    const up = await supabase.storage.from('avatars').upload(path, file, { contentType: 'image/jpeg' })
+    if (up.error) setMsg('Upload failed. Try a different image.')
+    else {
+      const { error } = await supabase.from('profiles').update({ avatar_path: path }).eq('id', session.user.id)
+      if (error) setMsg('Could not save your photo.'); else await refresh()
+    }
+    setUploading(false)
+  }
+
+  async function submitToken() {
+    setMsg(null)
+    const { error } = await supabase.functions.invoke('admin-bootstrap', { body: { action: setupMode, token } })
+    if (error) setMsg('That token was not accepted, or setup is already complete.')
+    else { setToken(''); await refresh() }
+  }
+
+  const copy = {
+    pending: ['Waiting for approval', 'A member will review your request. This page updates on its own.'],
+    rejected: ['Request declined', profile.rejection_reason ? `Reason: ${profile.rejection_reason}` : 'Your request was not approved.'],
+    banned: ['Account suspended', 'You no longer have access to this community.'],
+    approved: ['Approved', 'Loading your space…'],
+  }[status]
+
+  return (
+    <main className="flex min-h-full items-center justify-center p-4">
+      <div className="panel w-full max-w-md p-7">
+        <span className={`inline-block rounded-full px-3 py-1 text-xs font-semibold ${status === 'pending' ? 'bg-warn/15 text-warn' : status === 'approved' ? 'bg-ok/15 text-ok' : 'bg-bad/15 text-bad'}`}>
+          {status === 'pending' ? 'Pending' : status === 'approved' ? 'Approved' : status === 'rejected' ? 'Declined' : 'Suspended'}
+        </span>
+        <h1 className="mt-3 font-display text-2xl font-bold">{copy[0]}</h1>
+        <p className="mt-1 text-sm text-mute">{copy[1]}</p>
+
+        <div className="mt-6 flex items-start gap-4 rounded-xl border border-line bg-raised p-4">
+          <Avatar path={profile.avatar_path} name={profile.display_name} size={56} />
+          <div className="min-w-0 text-sm">
+            <p className="font-semibold">{profile.display_name}</p>
+            <p className="text-mute">@{profile.username}</p>
+            {profile.bio && <p className="mt-2 break-words">{profile.bio}</p>}
+          </div>
+        </div>
+
+        {status === 'pending' && (
+          <>
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => onPhoto(e.target.files?.[0])} />
+            <button className="btn-quiet mt-4 w-full" onClick={() => fileRef.current?.click()} disabled={uploading}>
+              {uploading ? 'Uploading…' : profile.avatar_path ? 'Change profile photo' : 'Add a profile photo'}
+            </button>
+          </>
+        )}
+        {msg && <p role="alert" className="mt-3 text-sm text-bad">{msg}</p>}
+
+        <div className="mt-6 flex items-center justify-between text-sm">
+          <button className="text-mute underline-offset-4 hover:underline" onClick={() => setSetupOpen((v) => !v)}>Setting up this community?</button>
+          <button className="text-mute underline-offset-4 hover:underline" onClick={signOut}>Sign out</button>
+        </div>
+        {setupOpen && (
+          <div className="mt-3 space-y-2 rounded-xl border border-line p-3">
+            <div className="flex gap-2 text-xs">
+              {(['bootstrap', 'recover'] as const).map((m) => (
+                <button key={m} onClick={() => setSetupMode(m)} className={`rounded-md px-2 py-1 ${setupMode === m ? 'bg-raised text-fg' : 'text-mute'}`}>
+                  {m === 'bootstrap' ? 'First admin' : 'Recover admin'}
+                </button>
+              ))}
+            </div>
+            <input className="field" type="password" placeholder="Setup token" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
+            <button className="btn-primary w-full" onClick={submitToken} disabled={token.length < 8}>Verify token</button>
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}
+
+// ---- src/components/Shell.tsx ----
+
+type View = 'chats' | 'ai' | 'inbox'
+
+function shortTime(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const days = (now.getTime() - d.getTime()) / 86_400_000
+  return days < 7 ? d.toLocaleDateString([], { weekday: 'short' }) : d.toLocaleDateString([], { day: 'numeric', month: 'short' })
+}
+
+function Shell() {
+  const { profile, session, isAdmin, signOut } = useAuth()
+  const me = session!.user.id
+  const { users } = useDirectory()
+  const [view, setView] = useState<View>('chats')
+  const [showContent, setShowContent] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [convos, setConvos] = useState<ConversationSummary[] | null>(null)
+  const [otherOf, setOtherOf] = useState<Record<string, string>>({})
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [pendingCount, setPendingCount] = useState(0)
+  const [showNew, setShowNew] = useState(false)
+
+  const loadConvos = useCallback(async () => {
+    const { data } = await supabase.rpc('my_conversations')
+    const rows = (data as ConversationSummary[] | null) ?? []
+    setConvos(rows)
+    const directIds = rows.filter((c) => c.type === 'direct').map((c) => c.id)
+    if (directIds.length) {
+      const { data: mem } = await supabase.from('conversation_members').select('conversation_id, user_id').in('conversation_id', directIds).neq('user_id', me)
+      setOtherOf(Object.fromEntries((mem ?? []).map((m) => [m.conversation_id as string, m.user_id as string])))
+    }
+  }, [me])
+
+  const loadPending = useCallback(async () => {
+    if (!isAdmin) return
+    const { count } = await supabase.from('approval_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending')
+    setPendingCount(count ?? 0)
+  }, [isAdmin])
+
+  useEffect(() => {
+    void loadConvos(); void loadPending()
+    const ch = supabase.channel('shell')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'approval_requests' }, () => { void loadPending() })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => { void loadConvos() })
+      .subscribe()
+    // New groups you are added to have no message yet, so refresh the list periodically and when the tab regains focus.
+    const poll = setInterval(() => { void loadConvos() }, 30_000)
+    const onVisible = () => { if (document.visibilityState === 'visible') void loadConvos() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { clearInterval(poll); document.removeEventListener('visibilitychange', onVisible); void supabase.removeChannel(ch) }
+  }, [loadConvos, loadPending, me])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menuOpen])
+
+  const titleOf = (c: ConversationSummary) => c.type === 'group' ? (c.title ?? 'Group') : (users[otherOf[c.id]]?.display_name ?? 'Chat')
+  const avatarOf = (c: ConversationSummary) => c.type === 'group' ? c.avatar_path : (users[otherOf[c.id]]?.avatar_path ?? null)
+
+  const go = (v: View) => { setView(v); setShowContent(true); setMenuOpen(false) }
+  const open = (id: string) => { setShowNew(false); setSelectedId(id); setView('chats'); setShowContent(true); void loadConvos() }
+
+  const shown = (convos ?? []).filter((c) => titleOf(c).toLowerCase().includes(query.toLowerCase()))
+  const selected = convos?.find((c) => c.id === selectedId) ?? null
+  const totalUnread = (convos ?? []).reduce((n, c) => n + (c.muted ? 0 : c.unread_count), 0)
+
+  const navItems: { id: View; label: string; icon: typeof MessageCircle; badge?: number; show: boolean }[] = [
+    { id: 'chats', label: 'Chats', icon: MessageCircle, badge: totalUnread, show: true },
+    { id: 'ai', label: 'AI Assistant', icon: Sparkles, show: true },
+    { id: 'inbox', label: 'Admin Bot', icon: ShieldCheck, badge: pendingCount, show: isAdmin },
+  ]
+  const Nav = ({ onPick }: { onPick: (v: View) => void }) => (
+    <nav className="space-y-1" aria-label="Main">
+      {navItems.filter((n) => n.show).map(({ id, label, icon: Icon, badge }) => (
+        <button key={id} onClick={() => onPick(id)} aria-current={view === id}
+          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition ${view === id ? 'bg-accent/15 text-fg' : 'text-mute hover:bg-white/5 hover:text-fg'}`}>
+          <Icon size={18} className={view === id ? 'text-accent' : ''} />{label}
+          {!!badge && badge > 0 && <span className="ml-auto rounded-full bg-accent px-2 py-0.5 text-xs font-semibold text-ink">{badge}</span>}
+        </button>
+      ))}
+    </nav>
+  )
+  const Me = () => (
+    <div className="flex items-center gap-3">
+      {profile && <Avatar path={profile.avatar_path} name={profile.display_name} size={38} />}
+      <div className="min-w-0 flex-1 text-sm">
+        <p className="truncate font-medium">{profile?.display_name}</p>
+        <p className="truncate text-xs text-mute">@{profile?.username}</p>
+      </div>
+      <button onClick={signOut} aria-label="Sign out" className="rounded-xl p-2 text-mute transition hover:bg-white/5 hover:text-fg"><LogOut size={18} /></button>
+    </div>
+  )
+
+  return (
+    <div className="flex h-full">
+      {/* Conversation list. On phones this is the home screen. */}
+      <aside className={`${showContent ? 'hidden' : 'flex'} glass w-full flex-col border-r border-white/5 md:flex md:w-[22rem] md:shrink-0`}>
+        <div className="flex items-center gap-2 px-3 pb-2 pt-[max(0.75rem,env(safe-area-inset-top))] md:px-4 md:pt-4">
+          <button onClick={() => setMenuOpen(true)} aria-label="Open menu" className="rounded-xl p-2 text-fg transition hover:bg-white/5 md:hidden"><Menu size={22} /></button>
+          <Logo size={30} />
+          <h1 className="flex-1 font-display text-lg font-bold tracking-tight">Common Room</h1>
+          <button onClick={() => setShowNew(true)} className="btn-primary !rounded-xl !px-3 !py-2" aria-label="New chat"><Plus size={18} /><span className="hidden md:inline">New chat</span></button>
+        </div>
+
+        <div className="px-3 md:px-4">
+          <label className="relative block">
+            <Search size={16} className="pointer-events-none absolute left-3.5 top-3.5 text-mute" />
+            <input className="field pl-10" placeholder="Search chats" aria-label="Search chats" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </label>
+        </div>
+
+        <div className="mt-3 hidden px-3 md:block md:px-4"><Nav onPick={go} /></div>
+
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Chats">
+          {convos === null && [0, 1, 2].map((i) => <div key={i} className="m-2 h-16 animate-pulse rounded-2xl bg-white/5" />)}
+          {convos && shown.length === 0 && (
+            <div className="px-4 py-10 text-center text-sm text-mute">
+              <p>{query ? 'No chats match your search.' : 'No chats yet.'}</p>
+              {!query && <button className="btn-primary mt-4" onClick={() => setShowNew(true)}><Plus size={16} />Start a new chat</button>}
+            </div>
+          )}
+          {shown.map((c) => {
+            const active = selectedId === c.id && view === 'chats'
+            return (
+              <button key={c.id} onClick={() => { setSelectedId(c.id); setView('chats'); setShowContent(true) }}
+                className={`relative flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition ${active ? 'bg-white/[0.08]' : 'hover:bg-white/[0.05]'}`}>
+                {active && <span className="absolute left-0 top-3 h-[calc(100%-1.5rem)] w-1 rounded-full bg-accent" />}
+                <Avatar path={avatarOf(c)} name={titleOf(c)} size={46} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-baseline justify-between gap-2">
+                    <span className={`truncate text-sm ${c.unread_count > 0 ? 'font-semibold' : 'font-medium'}`}>{titleOf(c)}</span>
+                    <span className="shrink-0 text-[11px] text-mute">{shortTime(c.last_message_at)}</span>
+                  </span>
+                  <span className="mt-0.5 flex items-center justify-between gap-2">
+                    <span className={`truncate text-xs ${c.unread_count > 0 ? 'text-fg/90' : 'text-mute'}`}>{c.last_message_preview ?? 'No messages yet'}</span>
+                    {c.unread_count > 0 && <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-ink">{c.unread_count}</span>}
+                  </span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="hidden border-t border-white/5 p-3 md:block"><Me /></div>
+      </aside>
+
+      {/* Main area */}
+      <main className={`${showContent ? 'flex' : 'hidden'} min-w-0 flex-1 flex-col md:flex`}>
+        {view === 'inbox' && isAdmin ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
+            <AdminInbox />
+          </div>
+        ) : view === 'ai' ? (
+          <>
+            <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
+            <div className="min-h-0 flex-1"><AssistantView /></div>
+          </>
+        ) : selected ? (
+          <ChatView key={selected.id} convo={selected} title={titleOf(selected)} avatarPath={avatarOf(selected)}
+            otherUserId={selected.type === 'direct' ? (otherOf[selected.id] ?? null) : null}
+            onBack={() => setShowContent(false)} onRead={loadConvos} />
+        ) : (
+          <div className="m-auto max-w-sm p-8 text-center">
+            <button className="mb-6 flex items-center gap-2 text-sm text-mute md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
+            <div className="logo-glow mx-auto mb-5 w-fit rounded-[14px]"><Logo size={56} /></div>
+            <h2 className="font-display text-2xl font-bold">Pick a chat</h2>
+            <p className="mt-2 text-sm text-mute">Choose a conversation from the list, or start a new one.</p>
+            <button className="btn-primary mt-5" onClick={() => setShowNew(true)}><Plus size={16} />New chat</button>
+          </div>
+        )}
+      </main>
+
+      {/* Mobile menu drawer */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true" aria-label="Menu">
+          <button aria-label="Close menu" className="absolute inset-0 animate-fade-in bg-black/60 backdrop-blur-sm" onClick={() => setMenuOpen(false)} />
+          <div className="glass absolute inset-y-0 left-0 flex w-72 max-w-[85%] animate-slide-in flex-col border-r border-white/10 bg-surface p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="mb-5 flex items-center gap-2.5">
+              <Logo size={32} /><span className="flex-1 font-display text-lg font-bold">Common Room</span>
+              <button onClick={() => setMenuOpen(false)} aria-label="Close menu" className="rounded-xl p-2 text-mute hover:bg-white/5"><X size={20} /></button>
+            </div>
+            <Nav onPick={go} />
+            <button className="btn-primary mt-4" onClick={() => { setMenuOpen(false); setShowNew(true) }}><Plus size={16} />New chat</button>
+            <div className="mt-auto border-t border-white/10 pt-4"><Me /></div>
+          </div>
+        </div>
+      )}
+
+      {showNew && <NewChatDialog onClose={() => setShowNew(false)} onOpen={open} />}
+    </div>
+  )
+}
+
+// ---- src/App.tsx ----
+
+function Gate() {
+  const { session, profile, loading } = useAuth()
+  if (loading) return <div className="flex h-full items-center justify-center"><div className="h-10 w-10 animate-pulse rounded-full bg-raised" /></div>
+  if (!session) return <AuthScreen />
+  if (!profile) return <div className="flex h-full items-center justify-center text-sm text-mute">Setting up your profile…</div>
+  if (profile.approval_status !== 'approved') return <PendingScreen />
+  return <DirectoryProvider><Shell /></DirectoryProvider>
+}
+
+function App() {
+  if (configError) {
+    return <main className="flex h-full items-center justify-center p-6"><p role="alert" className="panel max-w-md p-6 text-sm">{configError}</p></main>
+  }
+  return <AuthProvider><Gate /></AuthProvider>
+}
+
+createRoot(document.getElementById('root')!).render(<App />)
+
+</script>
+<script>
+(function () {
+  function fail(e) {
+    var r = document.getElementById('root');
+    if (!r) return;
+    var msg = (e && (e.stack || e.message)) || String(e);
+    r.innerHTML = '<div id="boot-error"><strong>Common Room could not start.</strong>\n\n' +
+      msg.replace(/&/g, '&amp;').replace(/</g, '&lt;') +
+      '\n\nCheck your internet connection (this page loads libraries from CDNs) and reload.</div>';
+  }
+  window.addEventListener('unhandledrejection', function (ev) { if (document.getElementById('boot')) fail(ev.reason); });
+  setTimeout(function () { if (document.getElementById('boot')) fail(new Error('Still loading after 20 seconds. A script from a CDN may be blocked on this network.')); }, 20000);
+  (async function () {
+    try {
+      if (!window.Babel) throw new Error('The Babel compiler did not load.');
+      var src = document.getElementById('app-src').textContent;
+      var out = Babel.transform(src, { filename: 'app.tsx', presets: [['typescript', { isTSX: true, allExtensions: true }], 'react'] }).code;
+      var url = URL.createObjectURL(new Blob([out], { type: 'text/javascript' }));
+      await import(url);
+    } catch (e) { fail(e); }
+  })();
+})();
+</script>
+</body>
+</html>
