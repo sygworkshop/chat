@@ -53,7 +53,7 @@ body { margin: 0; color: #ecebf6; background: radial-gradient(900px 520px at 8% 
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'https://esm.sh/react@18.3.1'
 import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
-import { ArrowLeft, Ban, Check, CheckCheck, Menu, FileText, Flag, FolderKanban, LogOut, MessageCircle, MoreHorizontal, Paperclip, Pencil, Pin, Plus, Reply, Search, Send, ShieldCheck, Sparkles, Trash2, Users, X } from 'https://esm.sh/lucide-react@0.441.0?deps=react@18.3.1'
+import { Archive, ArrowLeft, ArrowRight, Ban, Bell, BellOff, Check, CheckCheck, Download, ExternalLink, FileText, Film, Flag, FolderKanban, FolderOpen, Image as ImageIcon, Link2, LogOut, Menu, MessageCircle, Mic, MicOff, Monitor, MonitorOff, MoreHorizontal, Paperclip, Pencil, PhoneOff, Plus, Reply, Search, Send, Settings, Settings2, ShieldCheck, Sparkles, Star, ThumbsUp, Timer, Trash2, UserPlus, Users, Video, VideoOff, X } from 'https://esm.sh/lucide-react@0.441.0?deps=react@18.3.1'
 import hljs from 'https://esm.sh/highlight.js@11.10.0/lib/common'
 
 // ---- config (public values only; access is enforced by database security rules) ----
@@ -61,6 +61,10 @@ const supabaseUrl = 'https://phgghrknsbqnfrlxpfmj.supabase.co'
 const supabaseKey = 'sb_publishable_hJcAjo0OaySSvjfchkO-fQ_xDXCnCnB'
 const configError: string | null = null
 const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: true, autoRefreshToken: true } })
+// Optional: paste a free GIPHY API key (developers.giphy.com) between the quotes to enable GIF search.
+const GIPHY_KEY = ''
+// STUN is enough for most networks. If some people cannot join calls, add a TURN server to this list.
+const ICE_SERVERS: RTCIceServer[] = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
 
 // ---- src/lib/types.ts ----
 type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'banned'
@@ -72,6 +76,7 @@ interface Profile {
   bio: string | null
   approval_status: ApprovalStatus
   rejection_reason: string | null
+  notification_prefs: Record<string, unknown> | null
   created_at: string
 }
 interface ConversationSummary {
@@ -96,12 +101,14 @@ interface Message {
   conversation_id: string
   sender_id: string
   content: string
-  message_type: 'text' | 'image' | 'file' | 'system' | 'assistant'
+  message_type: 'text' | 'image' | 'file' | 'video' | 'gif' | 'system' | 'assistant'
   reply_to_message_id: string | null
   created_at: string
   updated_at: string
   edited_at: string | null
   deleted_at: string | null
+  is_important: boolean
+  expires_at: string | null
 }
 interface Reaction { message_id: string; user_id: string; emoji: string }
 interface Attachment {
@@ -132,6 +139,70 @@ async function compressImage(file: File, maxDim: number, quality = 0.8): Promise
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
   if (!blob) throw new Error('Could not encode image')
   return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' })
+}
+
+// ---- src/lib/files.ts ----
+
+const QUOTA_BYTES = 100 * 1024 * 1024
+const MAX_FILE_BYTES = 3 * 1024 * 1024
+const MAX_VIDEO_BYTES = 15 * 1024 * 1024
+const ALLOWED_FILES = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/plain', 'video/mp4', 'video/webm', 'video/quicktime']
+
+const urlCache = new Map<string, { url: string; at: number }>()
+
+/** Signed links are reused for 50 minutes so the browser can cache the file instead of downloading it again. */
+async function signedUrl(path: string): Promise<string | null> {
+  const hit = urlCache.get(path)
+  if (hit && Date.now() - hit.at < 50 * 60_000) return hit.url
+  const { data } = await supabase.storage.from('attachments').createSignedUrl(path, 3600)
+  if (data?.signedUrl) { urlCache.set(path, { url: data.signedUrl, at: Date.now() }); return data.signedUrl }
+  return null
+}
+
+async function openDownload(path: string, name: string) {
+  const { data } = await supabase.storage.from('attachments').createSignedUrl(path, 300, { download: name })
+  if (data?.signedUrl) window.open(data.signedUrl, '_blank', 'noopener')
+}
+
+function fmtSize(n: number): string {
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// ---- src/lib/notify.ts ----
+interface NotifyPrefs { browser: boolean; sound: boolean; preview: boolean }
+
+function readPrefs(raw: unknown): NotifyPrefs {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<NotifyPrefs>
+  return { browser: r.browser === true, sound: r.sound !== false, preview: r.preview !== false }
+}
+const notifySupported = () => typeof Notification !== 'undefined'
+async function askPermission(): Promise<NotificationPermission> {
+  if (!notifySupported()) return 'denied'
+  return Notification.requestPermission()
+}
+
+let ctx: AudioContext | null = null
+function beep() {
+  try {
+    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    ctx = ctx ?? new Ctor()
+    const o = ctx.createOscillator(), g = ctx.createGain()
+    o.type = 'sine'; o.frequency.value = 880
+    g.gain.setValueAtTime(0.0001, ctx.currentTime)
+    g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.01)
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25)
+    o.connect(g); g.connect(ctx.destination)
+    o.start(); o.stop(ctx.currentTime + 0.26)
+  } catch { /* audio not available */ }
+}
+
+function showNotification(title: string, body: string, onClick?: () => void) {
+  if (!notifySupported() || Notification.permission !== 'granted') return
+  try {
+    const n = new Notification(title, { body, tag: 'common-room' })
+    n.onclick = () => { window.focus(); onClick?.(); n.close() }
+  } catch { /* some mobile browsers only allow service-worker notifications */ }
 }
 
 // ---- src/lib/assistant.ts ----
@@ -354,6 +425,94 @@ function DirectoryProvider({ children }: { children: ReactNode }) {
 
 const useDirectory = () => useContext(DirCtx)
 
+// ---- src/features/chat/AttachmentView.tsx ----
+
+function AttachmentView({ att }: { att: Attachment }) {
+  const [url, setUrl] = useState<string | null>(null)
+  const media = att.mime_type.startsWith('image/') || att.mime_type.startsWith('video/')
+  useEffect(() => {
+    if (!media) return
+    let live = true
+    signedUrl(att.storage_path).then((u) => { if (live) setUrl(u) })
+    return () => { live = false }
+  }, [att.storage_path, media])
+
+  if (att.mime_type.startsWith('image/')) {
+    return url
+      ? <img src={url} alt={att.file_name} className="mt-1 max-h-80 max-w-full rounded-xl object-cover" loading="lazy" />
+      : <div className="mt-1 h-32 w-48 animate-pulse rounded-xl bg-white/5" />
+  }
+  if (att.mime_type.startsWith('video/')) {
+    return url
+      ? <video src={url} controls playsInline preload="metadata" className="mt-1 max-h-80 w-full max-w-sm rounded-xl bg-black" />
+      : <div className="mt-1 h-32 w-48 animate-pulse rounded-xl bg-white/5" />
+  }
+  return (
+    <button onClick={() => openDownload(att.storage_path, att.file_name)} className="mt-1 flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-left text-sm transition hover:border-accent/60">
+      <FileText size={20} className="shrink-0 text-accent" />
+      <span className="min-w-0"><span className="block truncate">{att.file_name}</span><span className="text-xs opacity-70">{fmtSize(att.size_bytes)} · tap to download</span></span>
+    </button>
+  )
+}
+
+// ---- src/features/chat/GifPicker.tsx ----
+
+interface Gif { id: string; preview: string; send: string }
+
+function GifPicker({ onPick, onClose }: { onPick: (url: string) => void; onClose: () => void }) {
+  const [q, setQ] = useState('')
+  const [gifs, setGifs] = useState<Gif[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!GIPHY_KEY) return
+    const t = setTimeout(async () => {
+      setLoading(true); setError(null)
+      try {
+        const base = q.trim() ? 'search' : 'trending'
+        const url = `https://api.giphy.com/v1/gifs/${base}?api_key=${encodeURIComponent(GIPHY_KEY)}&limit=24&rating=pg-13${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ''}`
+        const res = await fetch(url)
+        if (!res.ok) throw new Error('GIPHY request failed')
+        const json = await res.json() as { data: { id: string; images: Record<string, { url: string }> }[] }
+        setGifs(json.data.map((g) => ({
+          id: g.id,
+          preview: g.images.fixed_height_small?.url ?? g.images.fixed_height.url,
+          // Query strings are removed: only plain media URLs are accepted by the database.
+          send: (g.images.fixed_height?.url ?? g.images.original.url).split('?')[0],
+        })))
+      } catch { setError('Could not load GIFs. Check your GIPHY key and connection.') }
+      setLoading(false)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [q])
+
+  return (
+    <div className="glass absolute bottom-full left-0 right-0 z-20 mb-2 animate-pop rounded-2xl border border-white/10 bg-surface p-3 shadow-2xl">
+      <div className="mb-2 flex items-center gap-2">
+        <input className="field" autoFocus placeholder="Search GIFs" aria-label="Search GIFs" value={q} onChange={(e) => setQ(e.target.value)} disabled={!GIPHY_KEY} />
+        <button onClick={onClose} aria-label="Close GIF picker" className="rounded-xl p-2 hover:bg-white/5"><X size={18} /></button>
+      </div>
+      {!GIPHY_KEY ? (
+        <p className="p-3 text-sm text-mute">GIFs need a free GIPHY API key. The site owner adds it once in the setup (see README), then search works here.</p>
+      ) : (
+        <>
+          {error && <p role="alert" className="p-2 text-sm text-bad">{error}</p>}
+          {loading && gifs.length === 0 && <p className="p-2 text-sm text-mute">Loading…</p>}
+          <div className="grid max-h-60 grid-cols-3 gap-1.5 overflow-y-auto">
+            {gifs.map((g) => (
+              <button key={g.id} onClick={() => onPick(g.send)} className="overflow-hidden rounded-lg bg-white/5 transition hover:ring-2 hover:ring-accent">
+                <img src={g.preview} alt="GIF" loading="lazy" referrerPolicy="no-referrer" className="h-24 w-full object-cover" />
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-right text-[10px] text-mute">Powered by GIPHY</p>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---- src/features/chat/NewChatDialog.tsx ----
 
 function NewChatDialog({ onClose, onOpen }: { onClose: () => void; onOpen: (conversationId: string, type: 'direct' | 'group') => void }) {
@@ -433,13 +592,247 @@ function NewChatDialog({ onClose, onOpen }: { onClose: () => void; onOpen: (conv
   )
 }
 
+// ---- src/features/calls/CallOverlay.tsx ----
+
+const MAX_PEOPLE = 4
+
+function RemoteVideo({ stream, muted }: { stream: MediaStream | null; muted?: boolean }) {
+  return (
+    <video autoPlay playsInline muted={muted} className="h-full w-full object-cover"
+      ref={(el) => { if (el && el.srcObject !== stream) el.srcObject = stream }} />
+  )
+}
+
+/** Small peer-to-peer call (mesh, up to 4 people). Signalling travels over a private Realtime channel. */
+function CallOverlay({ conversationId, title, onClose }: { conversationId: string; title: string; onClose: () => void }) {
+  const { session } = useAuth()
+  const me = session!.user.id
+  const { users } = useDirectory()
+  const [peers, setPeers] = useState<Record<string, MediaStream>>({})
+  const [micOn, setMicOn] = useState(true)
+  const [camOn, setCamOn] = useState(true)
+  const [sharing, setSharing] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
+  const [showDevices, setShowDevices] = useState(false)
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+
+  const localRef = useRef<MediaStream | null>(null)
+  const screenRef = useRef<MediaStream | null>(null)
+  const chRef = useRef<RealtimeChannel | null>(null)
+  const pcs = useRef(new Map<string, RTCPeerConnection>())
+  const remote = useRef(new Map<string, MediaStream>())
+  const pendingIce = useRef(new Map<string, RTCIceCandidateInit[]>())
+  const offered = useRef(new Set<string>())
+  const canShare = typeof navigator !== 'undefined' && !!navigator.mediaDevices && 'getDisplayMedia' in navigator.mediaDevices
+
+  const send = (event: string, payload: Record<string, unknown>) => {
+    void chRef.current?.send({ type: 'broadcast', event, payload: { from: me, ...payload } })
+  }
+
+  const dropPeer = (id: string) => {
+    pcs.current.get(id)?.close()
+    pcs.current.delete(id); remote.current.delete(id); pendingIce.current.delete(id); offered.current.delete(id)
+    setPeers((p) => { const n = { ...p }; delete n[id]; return n })
+  }
+
+  const makePc = (peerId: string): RTCPeerConnection => {
+    const existing = pcs.current.get(peerId)
+    if (existing) return existing
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+    pcs.current.set(peerId, pc)
+    const local = localRef.current
+    const audio = local?.getAudioTracks()[0]
+    const video = local?.getVideoTracks()[0]
+    if (audio && local) pc.addTrack(audio, local); else pc.addTransceiver('audio', { direction: 'recvonly' })
+    if (video && local) pc.addTrack(video, local); else pc.addTransceiver('video', { direction: 'sendrecv' })
+    pc.onicecandidate = (e) => { if (e.candidate) send('ice', { to: peerId, candidate: e.candidate.toJSON() }) }
+    pc.ontrack = (e) => {
+      let ms = remote.current.get(peerId)
+      if (!ms) { ms = new MediaStream(); remote.current.set(peerId, ms) }
+      if (!ms.getTracks().includes(e.track)) ms.addTrack(e.track)
+      const stream = ms
+      setPeers((p) => ({ ...p, [peerId]: stream }))
+    }
+    pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') dropPeer(peerId) }
+    return pc
+  }
+
+  const flushIce = async (id: string, pc: RTCPeerConnection) => {
+    for (const c of pendingIce.current.get(id) ?? []) await pc.addIceCandidate(c).catch(() => {})
+    pendingIce.current.delete(id)
+  }
+
+  // The person with the smaller id always sends the offer, which avoids both sides offering at once.
+  const meet = async (peer: string) => {
+    if (peer === me || offered.current.has(peer) || me > peer) return
+    if (pcs.current.size >= MAX_PEOPLE - 1 && !pcs.current.has(peer)) return
+    offered.current.add(peer)
+    const pc = makePc(peer)
+    const offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    send('offer', { to: peer, sdp: pc.localDescription })
+  }
+
+  const replaceTrack = (kind: 'audio' | 'video', track: MediaStreamTrack | null) => {
+    pcs.current.forEach((pc) => {
+      const t = pc.getTransceivers().find((x) => x.receiver.track.kind === kind)
+      void t?.sender.replaceTrack(track)
+    })
+  }
+
+  useEffect(() => {
+    let live = true
+    let ch: RealtimeChannel | null = null
+    void (async () => {
+      let stream: MediaStream | null = null
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { width: 1280, height: 720 } }) }
+      catch {
+        try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); setNotice('Camera unavailable. You joined with audio only.') }
+        catch { setNotice('No microphone or camera access. You can watch and listen only.') }
+      }
+      if (!live) { stream?.getTracks().forEach((t) => t.stop()); return }
+      localRef.current = stream; setLocalStream(stream)
+      setMicOn(!!stream?.getAudioTracks().length); setCamOn(!!stream?.getVideoTracks().length)
+      navigator.mediaDevices.enumerateDevices().then((d) => { if (live) setDevices(d) }).catch(() => {})
+
+      ch = supabase.channel(`call:${conversationId}`, { config: { private: true } })
+      const onlyMine = (p: { from?: string; to?: string }) => p.from && p.from !== me && (!p.to || p.to === me)
+      ch.on('broadcast', { event: 'join' }, ({ payload }) => {
+        const p = payload as { from?: string }
+        if (!p.from || p.from === me) return
+        send('hello', { to: p.from }); void meet(p.from)
+      })
+      ch.on('broadcast', { event: 'hello' }, ({ payload }) => {
+        const p = payload as { from?: string; to?: string }
+        if (onlyMine(p)) void meet(p.from!)
+      })
+      ch.on('broadcast', { event: 'offer' }, async ({ payload }) => {
+        const p = payload as { from?: string; to?: string; sdp?: RTCSessionDescriptionInit }
+        if (!onlyMine(p) || !p.sdp) return
+        const pc = makePc(p.from!)
+        await pc.setRemoteDescription(p.sdp)
+        await flushIce(p.from!, pc)
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        send('answer', { to: p.from, sdp: pc.localDescription })
+      })
+      ch.on('broadcast', { event: 'answer' }, async ({ payload }) => {
+        const p = payload as { from?: string; to?: string; sdp?: RTCSessionDescriptionInit }
+        if (!onlyMine(p) || !p.sdp) return
+        const pc = pcs.current.get(p.from!)
+        if (!pc) return
+        await pc.setRemoteDescription(p.sdp)
+        await flushIce(p.from!, pc)
+      })
+      ch.on('broadcast', { event: 'ice' }, async ({ payload }) => {
+        const p = payload as { from?: string; to?: string; candidate?: RTCIceCandidateInit }
+        if (!onlyMine(p) || !p.candidate) return
+        const pc = pcs.current.get(p.from!)
+        if (pc && pc.remoteDescription) await pc.addIceCandidate(p.candidate).catch(() => {})
+        else pendingIce.current.set(p.from!, [...(pendingIce.current.get(p.from!) ?? []), p.candidate])
+      })
+      ch.on('broadcast', { event: 'leave' }, ({ payload }) => { const f = (payload as { from?: string }).from; if (f) dropPeer(f) })
+      ch.subscribe((status) => { if (status === 'SUBSCRIBED') { chRef.current = ch; send('join', {}) } })
+    })()
+
+    return () => {
+      live = false
+      send('leave', {})
+      pcs.current.forEach((pc) => pc.close()); pcs.current.clear()
+      localRef.current?.getTracks().forEach((t) => t.stop())
+      screenRef.current?.getTracks().forEach((t) => t.stop())
+      chRef.current = null
+      if (ch) void supabase.removeChannel(ch)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId])
+
+  function toggleMic() {
+    const tracks = localRef.current?.getAudioTracks() ?? []
+    const next = !micOn
+    tracks.forEach((t) => { t.enabled = next }); setMicOn(next && tracks.length > 0)
+  }
+  function toggleCam() {
+    const tracks = localRef.current?.getVideoTracks() ?? []
+    const next = !camOn
+    tracks.forEach((t) => { t.enabled = next }); setCamOn(next && tracks.length > 0)
+  }
+  function stopShare() {
+    screenRef.current?.getTracks().forEach((t) => t.stop()); screenRef.current = null
+    replaceTrack('video', localRef.current?.getVideoTracks()[0] ?? null)
+    setSharing(false)
+  }
+  async function toggleShare() {
+    if (sharing) return stopShare()
+    try {
+      const ds = await navigator.mediaDevices.getDisplayMedia({ video: true })
+      screenRef.current = ds
+      const track = ds.getVideoTracks()[0]
+      track.onended = () => stopShare()
+      replaceTrack('video', track); setSharing(true)
+    } catch { /* cancelled */ }
+  }
+  async function switchDevice(kind: 'audio' | 'video', deviceId: string) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia(kind === 'video' ? { video: { deviceId: { exact: deviceId } } } : { audio: { deviceId: { exact: deviceId } } })
+      const track = kind === 'video' ? s.getVideoTracks()[0] : s.getAudioTracks()[0]
+      const local = localRef.current ?? new MediaStream()
+      const old = kind === 'video' ? local.getVideoTracks() : local.getAudioTracks()
+      old.forEach((t) => { t.stop(); local.removeTrack(t) })
+      local.addTrack(track)
+      localRef.current = local; setLocalStream(new MediaStream(local.getTracks()))
+      if (!(kind === 'video' && sharing)) replaceTrack(kind, track)
+    } catch { setNotice('Could not switch to that device.') }
+  }
+
+  const cams = devices.filter((d) => d.kind === 'videoinput')
+  const mics = devices.filter((d) => d.kind === 'audioinput')
+  const ids = Object.keys(peers)
+  const tiles = 1 + ids.length
+  const cols = tiles <= 1 ? 'grid-cols-1' : tiles === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2'
+
+  return (
+    <div className="fixed inset-0 z-[60] flex animate-fade-in flex-col bg-ink/95 backdrop-blur-xl" role="dialog" aria-modal="true" aria-label={`Video call: ${title}`}>
+      <header className="flex items-center gap-3 px-4 pb-2 pt-[max(1rem,env(safe-area-inset-top))]">
+        <div className="min-w-0 flex-1"><h2 className="truncate font-display text-lg font-bold">{title}</h2><p className="text-xs text-mute">{ids.length === 0 ? 'Waiting for others to join…' : `${tiles} in call`}</p></div>
+      </header>
+      {notice && <p role="status" className="mx-4 rounded-xl bg-warn/15 px-3 py-2 text-sm text-warn">{notice}</p>}
+      <div className={`grid min-h-0 flex-1 gap-3 p-4 ${cols}`}>
+        <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-surface">
+          {camOn || sharing ? <RemoteVideo stream={sharing ? screenRef.current : localStream} muted /> : <div className="flex h-full items-center justify-center"><Avatar path={users[me]?.avatar_path} name={users[me]?.display_name ?? 'You'} size={72} /></div>}
+          <span className="absolute bottom-2 left-2 rounded-lg bg-black/60 px-2 py-0.5 text-xs">You{sharing ? ' (sharing screen)' : ''}{!micOn ? ' · muted' : ''}</span>
+        </div>
+        {ids.map((id) => (
+          <div key={id} className="relative overflow-hidden rounded-2xl border border-white/10 bg-surface">
+            <RemoteVideo stream={peers[id]} />
+            <span className="absolute bottom-2 left-2 rounded-lg bg-black/60 px-2 py-0.5 text-xs">{users[id]?.display_name ?? 'Someone'}</span>
+          </div>
+        ))}
+      </div>
+      {showDevices && (
+        <div className="glass mx-auto mb-2 w-full max-w-md animate-pop rounded-2xl border border-white/10 bg-surface p-3 text-sm">
+          <label className="block"><span className="mb-1 block text-mute">Camera</span>
+            <select className="field" onChange={(e) => void switchDevice('video', e.target.value)} defaultValue=""><option value="" disabled>Choose camera</option>{cams.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</option>)}</select></label>
+          <label className="mt-2 block"><span className="mb-1 block text-mute">Microphone</span>
+            <select className="field" onChange={(e) => void switchDevice('audio', e.target.value)} defaultValue=""><option value="" disabled>Choose microphone</option>{mics.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}</select></label>
+        </div>
+      )}
+      <footer className="flex items-center justify-center gap-3 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-2">
+        <button onClick={toggleMic} aria-pressed={!micOn} aria-label={micOn ? 'Mute microphone' : 'Unmute microphone'} className={`rounded-full p-3.5 transition ${micOn ? 'bg-white/10 hover:bg-white/15' : 'bg-bad text-white'}`}>{micOn ? <Mic size={20} /> : <MicOff size={20} />}</button>
+        <button onClick={toggleCam} aria-pressed={!camOn} aria-label={camOn ? 'Turn camera off' : 'Turn camera on'} className={`rounded-full p-3.5 transition ${camOn ? 'bg-white/10 hover:bg-white/15' : 'bg-bad text-white'}`}>{camOn ? <Video size={20} /> : <VideoOff size={20} />}</button>
+        {canShare && <button onClick={toggleShare} aria-pressed={sharing} aria-label={sharing ? 'Stop sharing screen' : 'Share screen'} className={`rounded-full p-3.5 transition ${sharing ? 'bg-accent text-ink' : 'bg-white/10 hover:bg-white/15'}`}>{sharing ? <MonitorOff size={20} /> : <Monitor size={20} />}</button>}
+        <button onClick={() => setShowDevices((v) => !v)} aria-pressed={showDevices} aria-label="Choose camera and microphone" className="rounded-full bg-white/10 p-3.5 transition hover:bg-white/15"><Settings2 size={20} /></button>
+        <button onClick={onClose} aria-label="Leave call" className="rounded-full bg-bad p-3.5 text-white transition hover:brightness-110"><PhoneOff size={20} /></button>
+      </footer>
+    </div>
+  )
+}
+
 // ---- src/features/chat/ChatView.tsx ----
 
 const PAGE = 40
 const EMOJIS = ['👍', '❤️', '😂', '🎉', '😮', '🙏']
-const ALLOWED_FILES = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/plain']
-const MAX_FILE = 3 * 1024 * 1024
-const urlCache = new Map<string, { url: string; at: number }>()
 
 interface Props {
   convo: ConversationSummary
@@ -450,35 +843,15 @@ interface Props {
   onRead: () => void
 }
 interface Member { user_id: string; role: string; last_read_at: string | null }
-interface Pinned { id: string; content: string; sender_id: string }
+interface Kept { id: string; content: string; sender_id: string; message_type: string }
 
-function AttachmentView({ att }: { att: Attachment }) {
-  const [url, setUrl] = useState<string | null>(null)
-  const isImage = att.mime_type.startsWith('image/')
-  useEffect(() => {
-    if (!isImage) return
-    let live = true
-    const hit = urlCache.get(att.storage_path)
-    if (hit && Date.now() - hit.at < 50 * 60_000) { setUrl(hit.url); return }
-    supabase.storage.from('attachments').createSignedUrl(att.storage_path, 3600).then(({ data }) => {
-      if (data?.signedUrl) urlCache.set(att.storage_path, { url: data.signedUrl, at: Date.now() })
-      if (live) setUrl(data?.signedUrl ?? null)
-    })
-    return () => { live = false }
-  }, [att.storage_path, isImage])
-  async function open() {
-    const { data } = await supabase.storage.from('attachments').createSignedUrl(att.storage_path, 300, { download: att.file_name })
-    if (data?.signedUrl) window.open(data.signedUrl, '_blank', 'noopener')
-  }
-  if (isImage) return url
-    ? <img src={url} alt={att.file_name} className="mt-1 max-h-72 max-w-full rounded-lg object-cover" loading="lazy" />
-    : <div className="mt-1 h-32 w-48 animate-pulse rounded-lg bg-raised" />
-  return (
-    <button onClick={open} className="mt-1 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-left text-sm hover:border-accent/60">
-      <FileText size={18} className="shrink-0 text-accent" />
-      <span className="min-w-0"><span className="block truncate">{att.file_name}</span><span className="text-xs text-mute">{(att.size_bytes / 1024).toFixed(0)} KB · tap to download</span></span>
-    </button>
-  )
+function timeLeft(expires: string): string {
+  const ms = Date.parse(expires) - Date.now()
+  if (ms <= 0) return 'now'
+  const h = Math.floor(ms / 3_600_000)
+  if (h >= 48) return `${Math.floor(h / 24)}d`
+  if (h >= 1) return `${h}h`
+  return `${Math.max(1, Math.ceil(ms / 60_000))}m`
 }
 
 function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Props) {
@@ -503,12 +876,16 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   const [, setTick] = useState(0)
   const [panel, setPanel] = useState(false)
   const [members, setMembers] = useState<Member[]>([])
-  const [pins, setPins] = useState<Pinned[]>([])
+  const [kept, setKept] = useState<Kept[]>([])
   const [blocked, setBlocked] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Message[] | null>(null)
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine)
+  const [disappear, setDisappear] = useState<number | null>(null)
+  const [muted, setMuted] = useState(convo.muted)
+  const [gifOpen, setGifOpen] = useState(false)
+  const [callOpen, setCallOpen] = useState(false)
 
   const msgsRef = useRef(msgs); msgsRef.current = msgs
   const bchRef = useRef<RealtimeChannel | null>(null)
@@ -535,17 +912,20 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     setAtts((prev) => [...prev.filter((x) => !set.has(x.message_id)), ...((a.data as Attachment[] | null) ?? [])])
   }, [])
 
-  const loadPins = useCallback(async () => {
-    const { data: p } = await supabase.from('pinned_messages').select('message_id').eq('conversation_id', convo.id)
-    const ids = (p ?? []).map((x) => x.message_id as string)
-    if (!ids.length) return setPins([])
-    const { data: m } = await supabase.from('messages').select('id, content, sender_id').in('id', ids).is('deleted_at', null)
-    setPins(((m ?? []) as Pinned[]))
+  const loadKept = useCallback(async () => {
+    const { data } = await supabase.from('messages').select('id, content, sender_id, message_type')
+      .eq('conversation_id', convo.id).eq('is_important', true).is('deleted_at', null).order('created_at', { ascending: false }).limit(50)
+    setKept((data as Kept[] | null) ?? [])
   }, [convo.id])
 
   const loadMembers = useCallback(async () => {
     const { data } = await supabase.from('conversation_members').select('user_id, role, last_read_at').eq('conversation_id', convo.id)
     setMembers((data as Member[] | null) ?? [])
+  }, [convo.id])
+
+  const loadSettings = useCallback(async () => {
+    const { data } = await supabase.from('conversations').select('disappear_after_hours').eq('id', convo.id).maybeSingle()
+    setDisappear((data?.disappear_after_hours as number | null | undefined) ?? null)
   }, [convo.id])
 
   const markRead = useCallback(async () => {
@@ -565,6 +945,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   useEffect(() => {
     let live = true
     setMsgs([]); setReactions([]); setAtts([]); setLoading(true); setReplyTo(null); setEditing(null); setError(null)
+    setMuted(convo.muted)
     stickRef.current = true
     void (async () => {
       const { data, error } = await supabase.from('messages').select('*').eq('conversation_id', convo.id)
@@ -576,12 +957,13 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
       await fetchExtras(rows.map((m) => m.id))
       if (!live) return
       setLoading(false)
-      void markRead(); void loadPins(); void loadMembers()
+      void markRead(); void loadKept(); void loadMembers(); void loadSettings()
     })()
     return () => { live = false }
-  }, [convo.id, fetchExtras, markRead, loadPins, loadMembers])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convo.id, fetchExtras, markRead, loadKept, loadMembers, loadSettings])
 
-  // realtime: row changes (RLS-checked) + private broadcast (typing and refresh signals)
+  // realtime: row changes (RLS-checked) + private broadcast (typing, read and refresh signals)
   useEffect(() => {
     const catchUp = async () => {
       const latest = msgsRef.current[msgsRef.current.length - 1]?.created_at
@@ -598,16 +980,18 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
         setMsgs((prev) => prev.some((x) => x.id === m.id) ? prev : [...prev, m])
         if (!usersRef.current[m.sender_id]) reloadDir()
         setTyping((t) => { const n = { ...t }; delete n[m.sender_id]; return n })
+        if (m.message_type === 'system') void loadSettings()
         void fetchExtras([m.id])
         if (m.sender_id !== me) void markRead()
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${convo.id}` }, (p) => {
         const m = p.new as Message
         setMsgs((prev) => prev.map((x) => x.id === m.id ? { ...x, ...m } : x))
+        void loadKept()
       })
       .subscribe((status) => { if (status === 'SUBSCRIBED') void catchUp() })
     const bch = supabase.channel(`conversation:${convo.id}`, { config: { private: true } })
-      .on('broadcast', { event: 'refresh' }, () => { void fetchExtras(msgsRef.current.slice(-100).map((m) => m.id)); void loadPins() })
+      .on('broadcast', { event: 'refresh' }, () => { void fetchExtras(msgsRef.current.slice(-100).map((m) => m.id)) })
       .on('broadcast', { event: 'read' }, ({ payload }) => {
         const p = payload as { user_id?: string; at?: string }
         const uid = p.user_id, at = p.at
@@ -627,7 +1011,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
       bchRef.current = null
       void supabase.removeChannel(rows); void supabase.removeChannel(bch)
     }
-  }, [convo.id, me, fetchExtras, markRead, loadPins, reloadDir])
+  }, [convo.id, me, fetchExtras, markRead, loadKept, loadSettings, reloadDir])
 
   useEffect(() => {
     const onVisible = () => { if (document.visibilityState === 'visible') void markRead() }
@@ -640,7 +1024,6 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     supabase.from('blocks').select('blocked_id').eq('blocker_id', me).eq('blocked_id', otherUserId).maybeSingle().then(({ data }) => setBlocked(!!data))
   }, [otherUserId, me])
 
-  // scroll management
   useLayoutEffect(() => {
     const el = listRef.current
     if (!el) return
@@ -705,17 +1088,31 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     if (wantsAi) void askAssistant(content.replace(/^@assistant\b[:,]?\s*/i, ''))
   }
 
+  async function sendGif(url: string) {
+    setGifOpen(false); setError(null)
+    const { data, error } = await supabase.from('messages')
+      .insert({ conversation_id: convo.id, sender_id: me, content: url, message_type: 'gif', reply_to_message_id: replyTo?.id ?? null }).select('*').single()
+    if (error || !data) return setError('Could not send that GIF.')
+    stickRef.current = true; setReplyTo(null)
+    setMsgs((prev) => prev.some((x) => x.id === data.id) ? prev : [...prev, data as Message])
+  }
+
   async function sendFile(picked: File | undefined) {
     if (!picked) return
-    if (!ALLOWED_FILES.includes(picked.type)) return setError('Use an image, PDF, or text file. For anything else, share a link.')
+    if (!ALLOWED_FILES.includes(picked.type)) return setError('Use a photo, video, PDF, or text file. For anything else, share a link.')
     setSending(true); setError(null)
     let file = picked
     if (picked.type.startsWith('image/')) {
       try { file = await compressImage(picked, 1600, 0.8) } catch { setSending(false); return setError('Could not read that image.') }
     }
-    if (file.size > MAX_FILE) { setSending(false); return setError('Files must be 3 MB or smaller. Share a link for bigger ones.') }
+    const isVideo = file.type.startsWith('video/')
+    if (file.size > (isVideo ? MAX_VIDEO_BYTES : MAX_FILE_BYTES)) {
+      setSending(false)
+      return setError(isVideo ? 'Videos must be 15 MB or smaller. Trim it, or share a link.' : 'Files must be 3 MB or smaller. Share a link for bigger ones.')
+    }
+    const kind = file.type.startsWith('image/') ? 'image' : isVideo ? 'video' : 'file'
     const { data: msg, error: e1 } = await supabase.from('messages').insert({
-      conversation_id: convo.id, sender_id: me, content: '', message_type: file.type.startsWith('image/') ? 'image' : 'file', reply_to_message_id: replyTo?.id ?? null,
+      conversation_id: convo.id, sender_id: me, content: '', message_type: kind, reply_to_message_id: replyTo?.id ?? null,
     }).select('*').single()
     if (e1 || !msg) { setSending(false); return setError('Could not send the file.') }
     const path = `${convo.id}/${msg.id}-${file.name.replace(/[^\w.-]+/g, '_').slice(-80)}`
@@ -733,7 +1130,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     if (!ok) {
       await supabase.from('messages').update({ deleted_at: new Date().toISOString() }).eq('id', msg.id)
       setMsgs((prev) => [...prev, { ...(msg as Message), content: '', deleted_at: new Date().toISOString() }])
-      setError(overQuota ? 'You have used your 50 MB file allowance. Share a link instead, or delete older files.' : 'Upload failed. Try again.')
+      setError(overQuota ? 'You have used your 100 MB file allowance. Delete files in the Files library, or share a link.' : 'Upload failed. Try again.')
     } else {
       setMsgs((prev) => prev.some((x) => x.id === msg.id) ? prev : [...prev, msg as Message])
       await fetchExtras([msg.id]); signalRefresh(); setReplyTo(null)
@@ -763,11 +1160,34 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     else setMsgs((prev) => prev.map((x) => x.id === m.id ? { ...x, content: '', deleted_at: new Date().toISOString() } : x))
   }
 
-  async function togglePin(m: Message) {
+  async function toggleImportant(m: Message) {
     setMenuFor(null)
-    if (pins.some((p) => p.id === m.id)) await supabase.from('pinned_messages').delete().eq('message_id', m.id)
-    else await supabase.from('pinned_messages').insert({ message_id: m.id, conversation_id: convo.id, pinned_by: me })
-    await loadPins(); signalRefresh()
+    const next = !m.is_important
+    const { error } = await supabase.rpc('set_message_important', { p_message: m.id, p_important: next })
+    if (error) return setError('Could not change that message.')
+    setMsgs((prev) => prev.map((x) => x.id === m.id ? { ...x, is_important: next, expires_at: next ? null : (disappear ? new Date(Date.now() + disappear * 3_600_000).toISOString() : null) } : x))
+    void loadKept()
+  }
+
+  async function changeDisappearing(hours: number | null) {
+    setError(null)
+    const { error } = await supabase.rpc('set_disappearing', { p_cid: convo.id, p_hours: hours })
+    if (error) setError(/admin/i.test(error.message) ? 'Only group admins can change this.' : 'Could not change that setting.')
+    else setDisappear(hours)
+  }
+
+  async function toggleMute() {
+    const next = !muted
+    setMuted(next)
+    const { error } = await supabase.from('conversation_members').update({ muted: next }).eq('conversation_id', convo.id).eq('user_id', me)
+    if (error) setMuted(!next); else onRead()
+  }
+
+  async function startCall() {
+    setError(null)
+    const { error } = await supabase.rpc('post_call_message', { p_cid: convo.id })
+    if (error) return setError('Could not start the call.')
+    setCallOpen(true)
   }
 
   async function report(m: Message) {
@@ -820,11 +1240,13 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   }
 
   const byId = useMemo(() => new Map(msgs.map((m) => [m.id, m])), [msgs])
-  const typingNames = Object.entries(typing).filter(([id, t]) => id !== me && Date.now() - t < 4000).map(([id]) => nameOf(id))
+  const nowMs = Date.now()
+  const visible = msgs.filter((m) => !m.expires_at || Date.parse(m.expires_at) > nowMs)
+  const typingNames = Object.entries(typing).filter(([id, t]) => id !== me && nowMs - t < 4000).map(([id]) => nameOf(id))
   const nonMembers = list.filter((u) => !members.some((m) => m.user_id === u.id))
   const others = members.filter((m) => m.user_id !== me)
   const seenBy = (m: Message) => others.filter((o) => o.last_read_at && Date.parse(o.last_read_at) >= Date.parse(m.created_at))
-  const lastMineId = [...msgs].reverse().find((m) => m.sender_id === me && !m.deleted_at && m.message_type !== 'assistant')?.id
+  const lastMineId = [...visible].reverse().find((m) => m.sender_id === me && !m.deleted_at && ['text', 'image', 'video', 'file', 'gif'].includes(m.message_type))?.id
   const seenLabel = (m: Message) => {
     const s = seenBy(m)
     if (!s.length) return 'Sent'
@@ -832,6 +1254,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     if (s.length === others.length) return 'Seen by everyone'
     return s.length <= 2 ? `Seen by ${s.map((x) => nameOf(x.user_id)).join(', ')}` : `Seen by ${s.length}`
   }
+  const disappearLabel = disappear === 24 ? '24 hours' : disappear === 168 ? '7 days' : null
 
   useEffect(() => {
     const el = taRef.current
@@ -843,15 +1266,16 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   return (
     <div className="relative flex h-full min-w-0">
       <section className="flex min-w-0 flex-1 flex-col">
-        <header className="glass flex items-center gap-3 border-b border-white/5 px-3 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:pt-2.5">
+        <header className="glass flex items-center gap-2 border-b border-white/5 px-3 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:pt-2.5">
           <button onClick={onBack} aria-label="Back to chats" className="rounded-xl p-2 text-fg transition hover:bg-white/5 md:hidden"><ArrowLeft size={20} /></button>
           <Avatar path={avatarPath} name={title} size={40} />
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-[15px] font-semibold leading-tight">{title}</h2>
+            <h2 className="flex items-center gap-1.5 truncate text-[15px] font-semibold leading-tight">{title}{muted && <BellOff size={13} className="shrink-0 text-mute" aria-label="Muted" />}</h2>
             <p className={`truncate text-xs ${typingNames.length ? 'text-accent' : 'text-mute'}`} aria-live="polite">
-              {typingNames.length ? (isGroup ? `${typingNames.join(', ')} typing…` : 'typing…') : isGroup ? `${members.length || ''} members` : 'Private chat'}
+              {typingNames.length ? (isGroup ? `${typingNames.join(', ')} typing…` : 'typing…') : `${isGroup ? `${members.length || ''} members` : 'Private chat'}${disappearLabel ? ` · disappears after ${disappearLabel}` : ''}`}
             </p>
           </div>
+          <button onClick={() => void startCall()} aria-label="Start a video call" className="rounded-xl p-2.5 text-mute transition hover:bg-white/5 hover:text-fg"><Video size={18} /></button>
           <button onClick={() => setSearchOpen((v) => !v)} aria-label="Search messages" className="rounded-xl p-2.5 text-mute transition hover:bg-white/5 hover:text-fg"><Search size={18} /></button>
           <button onClick={() => setPanel((v) => !v)} aria-label="Chat details" aria-pressed={panel} className={`rounded-xl p-2.5 transition hover:bg-white/5 ${panel ? 'text-accent' : 'text-mute hover:text-fg'}`}><Users size={18} /></button>
         </header>
@@ -870,11 +1294,11 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
             )}
           </div>
         )}
-        {pins.length > 0 && (
-          <div className="flex items-center gap-2 border-b border-white/5 bg-accent/10 px-4 py-1.5 text-xs">
-            <Pin size={14} className="shrink-0 text-accent" /><span className="truncate"><strong>{nameOf(pins[0].sender_id)}:</strong> {pins[0].content}</span>
-            {pins.length > 1 && <span className="shrink-0 text-mute">+{pins.length - 1}</span>}
-          </div>
+        {kept.length > 0 && (
+          <button onClick={() => setPanel(true)} className="flex items-center gap-2 border-b border-white/5 bg-warn/10 px-4 py-1.5 text-left text-xs">
+            <Star size={14} className="shrink-0 fill-current text-warn" /><span className="truncate"><strong>{nameOf(kept[0].sender_id)}:</strong> {kept[0].content || `[${kept[0].message_type}]`}</span>
+            {kept.length > 1 && <span className="shrink-0 text-mute">+{kept.length - 1}</span>}
+          </button>
         )}
         {!online && <p role="status" className="bg-warn/15 px-3 py-1.5 text-center text-xs text-warn">You are offline. Messages will not send until you reconnect.</p>}
 
@@ -882,13 +1306,31 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
           <div className="mx-auto w-full max-w-3xl">
             {hasMore && <button onClick={loadOlder} className="mx-auto mb-4 block rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-xs text-mute transition hover:text-fg">Load earlier messages</button>}
             {loading && <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className={`h-12 w-2/3 animate-pulse rounded-2xl bg-white/5 ${i % 2 ? 'ml-auto' : ''}`} />)}</div>}
-            {!loading && msgs.length === 0 && <p className="mx-auto mt-16 max-w-xs text-center text-sm text-mute">No messages yet. Say hello, or type <span className="text-accent">@assistant</span> and a question to ask the AI.</p>}
-            {msgs.map((m, i) => {
+            {!loading && visible.length === 0 && <p className="mx-auto mt-16 max-w-xs text-center text-sm text-mute">No messages yet. Say hello, send a GIF, or type <span className="text-accent">@assistant</span> and a question to ask the AI.</p>}
+            {visible.map((m, i) => {
               const mine = m.sender_id === me
-              const prev = msgs[i - 1]
+              const prev = visible[i - 1]
               const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString()
+              const sep = newDay && <p className="mb-3 mt-5 text-center"><span className="rounded-full bg-white/5 px-3 py-1 text-xs text-mute">{new Date(m.created_at).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</span></p>
+
+              if (m.message_type === 'system') {
+                const isCall = m.content === 'started a video call'
+                const recent = Date.now() - Date.parse(m.created_at) < 3_600_000
+                return (
+                  <div key={m.id} className="animate-pop">
+                    {sep}
+                    <p className="my-3 flex items-center justify-center gap-2 text-center text-xs text-mute">
+                      <span className="inline-flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5">
+                        {isCall && <Video size={13} className="text-accent" />}{mine ? 'You' : nameOf(m.sender_id)} {m.content}
+                        {isCall && recent && <button onClick={() => setCallOpen(true)} className="rounded-full bg-accent px-2.5 py-0.5 font-semibold text-ink">Join</button>}
+                      </span>
+                    </p>
+                  </div>
+                )
+              }
+
               const isAi = m.message_type === 'assistant'
-              const sameRun = !!prev && !newDay && prev.sender_id === m.sender_id && prev.message_type !== 'assistant' && !isAi
+              const sameRun = !!prev && !newDay && prev.sender_id === m.sender_id && prev.message_type !== 'assistant' && prev.message_type !== 'system' && !isAi
               const showName = !mine && isGroup && !sameRun
               const rs = reactions.filter((r) => r.message_id === m.id)
               const grouped = rs.map((r) => r.emoji).filter((e, idx, a) => a.indexOf(e) === idx)
@@ -898,7 +1340,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
               const bubble = isAi ? 'border border-accent/30 bg-accent/10' : mine ? 'bubble-me rounded-br-md' : 'bubble-them rounded-bl-md'
               return (
                 <div key={m.id} className={`animate-pop ${sameRun ? 'mt-0.5' : 'mt-3'}`}>
-                  {newDay && <p className="mb-3 mt-5 text-center"><span className="rounded-full bg-white/5 px-3 py-1 text-xs text-mute">{new Date(m.created_at).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</span></p>}
+                  {sep}
                   <div className={`group relative flex ${mine ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[85%] rounded-2xl px-3.5 py-2 sm:max-w-[70%] ${bubble} ${deleted ? 'opacity-60' : ''}`}>
                       {showName && <p className="mb-0.5 text-xs font-semibold text-accent">{nameOf(m.sender_id)}</p>}
@@ -906,10 +1348,13 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
                       {target && !deleted && <p className={`mb-1.5 truncate rounded-md border-l-2 bg-black/10 px-2 py-1 text-xs ${mine && !isAi ? 'border-white/60 text-white/85' : 'border-accent text-mute'}`}>{nameOf(target.sender_id)}: {target.deleted_at ? 'Deleted message' : target.content || `[${target.message_type}]`}</p>}
                       {deleted ? <p className="text-sm italic">This message was deleted</p>
                         : isAi ? <Markdown text={m.content} />
+                        : m.message_type === 'gif' ? <img src={m.content} alt="GIF" loading="lazy" referrerPolicy="no-referrer" className="max-h-60 max-w-full rounded-xl" />
                         : m.content && <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">{m.content}</p>}
                       {!deleted && atts.filter((a) => a.message_id === m.id).map((a) => <AttachmentView key={a.id} att={a} />)}
-                      <p className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${mine && !isAi ? 'text-white/70' : 'text-mute'}`}>
-                        {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{m.edited_at && !deleted ? ' · edited' : ''}
+                      <p className={`mt-1 flex items-center justify-end gap-1.5 text-[11px] ${mine && !isAi ? 'text-white/70' : 'text-mute'}`}>
+                        {m.is_important && !deleted && <Star size={12} className="fill-current text-warn" aria-label="Important" />}
+                        {m.expires_at && !deleted && <span className="inline-flex items-center gap-0.5" title="Disappears"><Timer size={11} />{timeLeft(m.expires_at)}</span>}
+                        <span>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{m.edited_at && !deleted ? ' · edited' : ''}</span>
                         {mine && !isAi && !deleted && (seen ? <CheckCheck size={14} className="text-[#c8f7e3]" aria-label="Seen" /> : <Check size={14} aria-label="Sent" />)}
                       </p>
                     </div>
@@ -917,10 +1362,10 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
                     {menuFor === m.id && (
                       <>
                         <button aria-label="Close menu" className="fixed inset-0 z-10 cursor-default" onClick={() => setMenuFor(null)} />
-                        <div className={`glass absolute top-7 z-20 w-56 animate-pop rounded-2xl border border-white/10 bg-surface p-2 shadow-2xl ${mine ? 'right-8' : 'left-8'}`}>
+                        <div className={`glass absolute top-7 z-20 w-60 animate-pop rounded-2xl border border-white/10 bg-surface p-2 shadow-2xl ${mine ? 'right-8' : 'left-8'}`}>
                           <div className="mb-1 flex justify-between px-1">{EMOJIS.map((e) => <button key={e} onClick={() => toggleReaction(m, e)} className="rounded-lg p-1 text-lg transition hover:scale-110 hover:bg-white/10" aria-label={`React ${e}`}>{e}</button>)}</div>
                           <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => { setReplyTo(m); setMenuFor(null) }}><Reply size={14} />Reply</button>
-                          <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => togglePin(m)}><Pin size={14} />{pins.some((p) => p.id === m.id) ? 'Unpin' : 'Pin'}</button>
+                          <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => toggleImportant(m)}><Star size={14} />{m.is_important ? 'Remove important mark' : 'Mark important (never disappears)'}</button>
                           {mine && m.message_type === 'text' && <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => { setEditing(m); setText(m.content); setMenuFor(null) }}><Pencil size={14} />Edit</button>}
                           {mine && <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-bad hover:bg-white/5" onClick={() => deleteMsg(m)}><Trash2 size={14} />Delete</button>}
                           {!mine && <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5" onClick={() => report(m)}><Flag size={14} />Report</button>}
@@ -954,7 +1399,8 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
         </div>
 
         <footer className="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
-          <div className="mx-auto w-full max-w-3xl">
+          <div className="relative mx-auto w-full max-w-3xl">
+            {gifOpen && <GifPicker onPick={(u) => void sendGif(u)} onClose={() => setGifOpen(false)} />}
             {(replyTo || editing) && (
               <div className="mb-2 flex animate-pop items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs">
                 <span className="min-w-0 flex-1 truncate text-mute">{editing ? 'Editing message' : `Replying to ${nameOf(replyTo!.sender_id)}: ${replyTo!.content || `[${replyTo!.message_type}]`}`}</span>
@@ -962,9 +1408,10 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
               </div>
             )}
             {error && <p role="alert" className="mb-2 text-sm text-bad">{error}</p>}
-            <div className="glass flex items-end gap-1 rounded-2xl border border-white/10 p-1.5 shadow-xl shadow-black/30">
+            <div className="glass flex items-end gap-0.5 rounded-2xl border border-white/10 p-1.5 shadow-xl shadow-black/30">
               <input ref={fileRef} type="file" hidden accept={ALLOWED_FILES.join(',')} onChange={(e) => void sendFile(e.target.files?.[0])} />
-              <button onClick={() => fileRef.current?.click()} disabled={sending || !!editing} aria-label="Attach a file" className="rounded-xl p-2.5 text-mute transition hover:bg-white/10 hover:text-fg disabled:opacity-40"><Paperclip size={20} /></button>
+              <button onClick={() => fileRef.current?.click()} disabled={sending || !!editing} aria-label="Attach a photo, video or file" className="rounded-xl p-2.5 text-mute transition hover:bg-white/10 hover:text-fg disabled:opacity-40"><Paperclip size={20} /></button>
+              <button onClick={() => setGifOpen((v) => !v)} disabled={!!editing} aria-label="Send a GIF" aria-pressed={gifOpen} className="rounded-xl px-2 py-2.5 text-xs font-bold text-mute transition hover:bg-white/10 hover:text-fg disabled:opacity-40">GIF</button>
               <button onClick={() => setText((t) => /^@assistant\b/i.test(t) ? t : `@assistant ${t}`)} disabled={!!editing} aria-label="Ask the AI assistant" title="Ask the AI assistant" className="rounded-xl p-2.5 text-accent transition hover:bg-white/10 disabled:opacity-40"><Sparkles size={20} /></button>
               <textarea ref={taRef} value={text} onChange={(e) => onType(e.target.value)} onKeyDown={onKey} rows={1} maxLength={4000} aria-label="Message"
                 placeholder="Write a message" className="max-h-32 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2.5 text-[15px] text-fg placeholder:text-mute/70 focus:outline-none" />
@@ -977,7 +1424,17 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
       {panel && (
         <aside className="glass absolute inset-y-0 right-0 z-30 w-full max-w-xs animate-pop overflow-y-auto border-l border-white/10 bg-surface p-4 md:static md:z-auto md:animate-none" aria-label="Chat details">
           <div className="flex items-center justify-between"><h3 className="font-display text-lg font-bold">Details</h3><button onClick={() => setPanel(false)} aria-label="Close details" className="rounded-xl p-2 hover:bg-white/5"><X size={18} /></button></div>
-          <h4 className="mt-4 text-xs font-semibold uppercase tracking-wide text-mute">{isGroup ? 'Members' : 'Person'}</h4>
+
+          <h4 className="mt-4 text-xs font-semibold uppercase tracking-wide text-mute">Disappearing messages</h4>
+          <select className="field mt-2" aria-label="Disappearing messages" value={disappear ?? ''} disabled={isGroup && !canManage}
+            onChange={(e) => void changeDisappearing(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">Off</option><option value="24">After 24 hours</option><option value="168">After 7 days</option>
+          </select>
+          <p className="mt-1 text-xs text-mute">{isGroup && !canManage ? 'Only group admins can change this. ' : ''}Applies to new messages. Starred important messages are kept.</p>
+
+          <button onClick={toggleMute} aria-pressed={muted} className="btn-quiet mt-4 w-full"><BellOff size={16} />{muted ? 'Unmute this chat' : 'Mute this chat'}</button>
+
+          <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">{isGroup ? 'Members' : 'Person'}</h4>
           <ul className="mt-2 space-y-1">
             {members.map((m) => (
               <li key={m.user_id} className="flex items-center gap-2 rounded-xl p-1.5 text-sm">
@@ -995,12 +1452,14 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
               </select></label>
           )}
           {!isGroup && otherUserId && <button className="btn-quiet mt-4 w-full" onClick={toggleBlock}><Ban size={16} />{blocked ? 'Unblock' : 'Block'} {nameOf(otherUserId)}</button>}
-          <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">Pinned</h4>
-          {pins.length === 0 ? <p className="mt-1 text-sm text-mute">Nothing pinned.</p> : <ul className="mt-2 space-y-2 text-sm">{pins.map((p) => <li key={p.id} className="rounded-xl bg-white/5 p-2.5"><span className="text-xs text-mute">{nameOf(p.sender_id)}</span><p className="break-words">{p.content}</p></li>)}</ul>}
+
+          <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">Important messages</h4>
+          {kept.length === 0 ? <p className="mt-1 text-sm text-mute">Mark a message important and it will never disappear.</p> : <ul className="mt-2 space-y-2 text-sm">{kept.map((p) => <li key={p.id} className="rounded-xl bg-white/5 p-2.5"><span className="text-xs text-mute">{nameOf(p.sender_id)}</span><p className="break-words">{p.content || `[${p.message_type}]`}</p></li>)}</ul>}
           <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">Shared files</h4>
           {atts.length === 0 ? <p className="mt-1 text-sm text-mute">No files yet.</p> : <div className="mt-2 space-y-1">{atts.map((a) => <AttachmentView key={a.id} att={a} />)}</div>}
         </aside>
       )}
+      {callOpen && <CallOverlay conversationId={convo.id} title={title} onClose={() => setCallOpen(false)} />}
     </div>
   )
 }
@@ -1111,6 +1570,616 @@ function AssistantView() {
         </div>
       </footer>
     </div>
+  )
+}
+
+// ---- src/features/library/LibraryView.tsx ----
+
+interface FileRow {
+  id: string; conversation_id: string; uploader_id: string; storage_path: string
+  file_name: string; mime_type: string; size_bytes: number; created_at: string
+}
+type Filter = 'all' | 'images' | 'videos' | 'docs'
+
+function Thumb({ row }: { row: FileRow }) {
+  const [url, setUrl] = useState<string | null>(null)
+  const isImg = row.mime_type.startsWith('image/')
+  useEffect(() => {
+    if (!isImg) return
+    let live = true
+    signedUrl(row.storage_path).then((u) => { if (live) setUrl(u) })
+    return () => { live = false }
+  }, [row.storage_path, isImg])
+  if (isImg) return url ? <img src={url} alt={row.file_name} loading="lazy" className="h-full w-full object-cover" /> : <div className="h-full w-full animate-pulse bg-white/5" />
+  const Icon = row.mime_type.startsWith('video/') ? Film : FileText
+  return <div className="flex h-full w-full items-center justify-center bg-white/5"><Icon size={30} className="text-accent" /></div>
+}
+
+function LibraryView({ titleOf }: { titleOf: (conversationId: string) => string }) {
+  const { session } = useAuth()
+  const me = session!.user.id
+  const { users } = useDirectory()
+  const [rows, setRows] = useState<FileRow[] | null>(null)
+  const [filter, setFilter] = useState<Filter>('all')
+  const [q, setQ] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    const { data, error } = await supabase.from('attachments')
+      .select('id, conversation_id, uploader_id, storage_path, file_name, mime_type, size_bytes, created_at')
+      .order('created_at', { ascending: false }).limit(300)
+    if (error) setError('Could not load files.'); else setRows((data as FileRow[] | null) ?? [])
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const mine = (rows ?? []).filter((r) => r.uploader_id === me).reduce((n, r) => n + r.size_bytes, 0)
+  const shown = useMemo(() => (rows ?? []).filter((r) =>
+    (filter === 'all' || (filter === 'images' && r.mime_type.startsWith('image/')) || (filter === 'videos' && r.mime_type.startsWith('video/'))
+      || (filter === 'docs' && !r.mime_type.startsWith('image/') && !r.mime_type.startsWith('video/')))
+    && r.file_name.toLowerCase().includes(q.toLowerCase())), [rows, filter, q])
+
+  async function remove(r: FileRow) {
+    if (!window.confirm(`Delete "${r.file_name}"? It will disappear from the chat too.`)) return
+    const rm = await supabase.storage.from('attachments').remove([r.storage_path])
+    if (rm.error) return setError('Could not delete that file.')
+    await supabase.from('attachments').delete().eq('id', r.id)
+    await load()
+  }
+
+  return (
+    <section className="mx-auto h-full w-full max-w-4xl overflow-y-auto p-4 sm:p-8">
+      <h2 className="font-display text-2xl font-bold">File library</h2>
+      <p className="mt-1 text-sm text-mute">Everything shared in your chats, in one place. Files in disappearing chats are removed with their messages.</p>
+
+      <div className="panel mt-5 p-4">
+        <div className="flex items-center justify-between text-sm"><span>Your uploads</span><span className="text-mute">{fmtSize(mine)} of {fmtSize(QUOTA_BYTES)}</span></div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-gradient-to-r from-accent to-indigo-400" style={{ width: `${Math.min(100, (mine / QUOTA_BYTES) * 100)}%` }} /></div>
+        <p className="mt-2 text-xs text-mute">Delete files you no longer need to free space.</p>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        {([['all', 'All'], ['images', 'Photos'], ['videos', 'Videos'], ['docs', 'Documents']] as [Filter, string][]).map(([id, label]) => (
+          <button key={id} onClick={() => setFilter(id)} aria-pressed={filter === id} className={`rounded-full px-3.5 py-1.5 text-sm transition ${filter === id ? 'bg-accent font-semibold text-ink' : 'bg-white/5 text-mute hover:text-fg'}`}>{label}</button>
+        ))}
+        <input className="field ml-auto max-w-[12rem] !py-1.5" placeholder="Search files" aria-label="Search files" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+
+      {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
+      {rows === null && <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">{[0, 1, 2].map((i) => <div key={i} className="h-44 animate-pulse rounded-2xl bg-white/5" />)}</div>}
+      {rows && shown.length === 0 && <p className="mt-10 text-center text-sm text-mute"><ImageIcon className="mx-auto mb-2" size={28} />No files here yet. Share a photo, video or document in a chat and it shows up.</p>}
+
+      <ul className="mt-5 grid grid-cols-2 gap-3 pb-6 sm:grid-cols-3">
+        {shown.map((r) => (
+          <li key={r.id} className="panel overflow-hidden !rounded-2xl">
+            <div className="h-28 sm:h-36"><Thumb row={r} /></div>
+            <div className="p-3">
+              <p className="truncate text-sm font-medium" title={r.file_name}>{r.file_name}</p>
+              <p className="truncate text-xs text-mute">{users[r.uploader_id]?.display_name ?? 'Someone'} · {titleOf(r.conversation_id)}</p>
+              <p className="text-xs text-mute">{fmtSize(r.size_bytes)} · {new Date(r.created_at).toLocaleDateString()}</p>
+              <div className="mt-2 flex gap-1">
+                <button onClick={() => openDownload(r.storage_path, r.file_name)} className="btn-quiet !px-2.5 !py-1.5 text-xs" aria-label={`Download ${r.file_name}`}><Download size={14} />Open</button>
+                {r.uploader_id === me && <button onClick={() => remove(r)} className="btn-quiet !px-2.5 !py-1.5 text-xs text-bad" aria-label={`Delete ${r.file_name}`}><Trash2 size={14} /></button>}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+// ---- src/features/projects/ProjectsView.tsx ----
+
+interface Project { id: string; name: string; description: string | null; status: 'active' | 'archived'; conversation_id: string | null; created_by: string | null; created_at: string }
+interface Task { id: string; project_id: string; title: string; status: 'todo' | 'doing' | 'done'; assignee_id: string | null; due_date: string | null }
+interface Idea { id: string; content: string; created_by: string | null; created_at: string }
+interface Vote { idea_id: string; user_id: string }
+interface LinkRow { id: string; title: string; url: string; created_by: string | null }
+interface PMember { user_id: string; role: 'owner' | 'member' }
+
+const COLS: { id: Task['status']; label: string }[] = [{ id: 'todo', label: 'To do' }, { id: 'doing', label: 'In progress' }, { id: 'done', label: 'Done' }]
+
+function NewProjectDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+  const { session } = useAuth()
+  const { list } = useDirectory()
+  const [name, setName] = useState('')
+  const [desc, setDesc] = useState('')
+  const [picked, setPicked] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const people = list.filter((u) => u.id !== session?.user.id)
+
+  async function create() {
+    if (!name.trim()) return setError('Give the project a name.')
+    setBusy(true); setError(null)
+    const { data, error } = await supabase.rpc('create_project', { p_name: name.trim(), p_description: desc.trim() || null, p_members: picked })
+    setBusy(false)
+    if (error || !data) return setError('Could not create the project.')
+    onCreated(data as string)
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex animate-fade-in items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="New project">
+      <div className="panel flex max-h-[90dvh] w-full max-w-md animate-pop flex-col rounded-b-none p-5 sm:rounded-b-3xl">
+        <div className="flex items-center justify-between"><h2 className="font-display text-xl font-bold">New project</h2><button onClick={onClose} aria-label="Close" className="rounded-xl p-2 hover:bg-white/5"><X size={18} /></button></div>
+        <input className="field mt-3" placeholder="Project name" aria-label="Project name" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+        <textarea className="field mt-2 min-h-[72px]" placeholder="What are you building?" aria-label="Description" value={desc} maxLength={1000} onChange={(e) => setDesc(e.target.value)} />
+        <p className="mt-3 text-sm text-mute">Add people (a project chat is created for everyone)</p>
+        <ul className="mt-1 min-h-[6rem] flex-1 overflow-y-auto">
+          {people.map((u) => (
+            <li key={u.id}><label className="flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 hover:bg-white/5">
+              <Avatar path={u.avatar_path} name={u.display_name} size={32} /><span className="flex-1 truncate text-sm">{u.display_name}</span>
+              <input type="checkbox" checked={picked.includes(u.id)} onChange={() => setPicked((p) => p.includes(u.id) ? p.filter((x) => x !== u.id) : [...p, u.id])} />
+            </label></li>
+          ))}
+          {people.length === 0 && <li className="p-2 text-sm text-mute">No one else has joined yet. You can add people later.</li>}
+        </ul>
+        {error && <p role="alert" className="mt-2 text-sm text-bad">{error}</p>}
+        <button className="btn-primary mt-3 w-full" onClick={create} disabled={busy}>{busy ? 'Creating…' : 'Create project'}</button>
+      </div>
+    </div>
+  )
+}
+
+function PlanDialog({ project, tasks, onClose, onAdded }: { project: Project; tasks: Task[]; onClose: () => void; onAdded: () => void }) {
+  const [extra, setExtra] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [ideas, setIdeas] = useState<string[]>([])
+  const [sel, setSel] = useState<Set<number>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+
+  async function generate() {
+    setBusy(true); setError(null); setIdeas([])
+    const message = `You are helping a small group plan a project.\nProject: ${project.name}\nDescription: ${project.description ?? '(none)'}\nExisting tasks: ${tasks.map((t) => t.title).join('; ') || '(none)'}\nExtra context: ${extra || '(none)'}\n\nReturn ONLY a JSON array of 6 to 10 short, concrete task titles (strings). No other text.`
+    let acc = ''
+    try {
+      await callAssistant({ mode: 'private', message: message.slice(0, 7500) }, (e) => { if (e.delta) acc += e.delta; if (e.error) setError(e.error) })
+      const m = acc.match(/\[[\s\S]*\]/)
+      const arr = m ? (JSON.parse(m[0]) as unknown[]) : []
+      const titles = arr.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim().slice(0, 200)).slice(0, 12)
+      if (!titles.length) setError('The assistant did not return a usable plan. Try again with more detail.')
+      setIdeas(titles); setSel(new Set(titles.map((_, i) => i)))
+    } catch (e) { setError(e instanceof Error ? e.message : 'The assistant is unavailable.') }
+    setBusy(false)
+  }
+  async function add() {
+    const rows = ideas.filter((_, i) => sel.has(i)).map((title) => ({ project_id: project.id, title }))
+    if (!rows.length) return
+    const { error } = await supabase.from('tasks').insert(rows)
+    if (error) return setError('Could not add the tasks.')
+    onAdded(); onClose()
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex animate-fade-in items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Plan with AI">
+      <div className="panel flex max-h-[90dvh] w-full max-w-lg animate-pop flex-col rounded-b-none p-5 sm:rounded-b-3xl">
+        <div className="flex items-center justify-between"><h2 className="flex items-center gap-2 font-display text-xl font-bold"><Sparkles size={18} className="text-accent" />Plan with AI</h2><button onClick={onClose} aria-label="Close" className="rounded-xl p-2 hover:bg-white/5"><X size={18} /></button></div>
+        <p className="mt-1 text-sm text-mute">The assistant suggests tasks from the project description. Your project text is sent to Groq. Pick what to add.</p>
+        <textarea className="field mt-3 min-h-[64px]" placeholder="Anything else it should know? (optional)" value={extra} maxLength={1000} onChange={(e) => setExtra(e.target.value)} />
+        <button className="btn-quiet mt-2" onClick={generate} disabled={busy}>{busy ? 'Thinking…' : ideas.length ? 'Regenerate' : 'Suggest tasks'}</button>
+        {error && <p role="alert" className="mt-2 text-sm text-bad">{error}</p>}
+        <ul className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto">
+          {ideas.map((t, i) => (
+            <li key={i}><label className="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 hover:bg-white/5">
+              <input type="checkbox" className="mt-1" checked={sel.has(i)} onChange={() => setSel((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n })} /><span className="text-sm">{t}</span>
+            </label></li>
+          ))}
+        </ul>
+        {ideas.length > 0 && <button className="btn-primary mt-3" onClick={add} disabled={sel.size === 0}>Add {sel.size} task{sel.size === 1 ? '' : 's'}</button>}
+      </div>
+    </div>
+  )
+}
+
+function ProjectDetail({ project, onBack, onOpenChat, onChanged }: { project: Project; onBack: () => void; onOpenChat: (id: string) => void; onChanged: () => void }) {
+  const { session } = useAuth()
+  const me = session!.user.id
+  const { users, list } = useDirectory()
+  const [tab, setTab] = useState<'tasks' | 'ideas' | 'links' | 'team'>('tasks')
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [ideas, setIdeas] = useState<Idea[]>([])
+  const [votes, setVotes] = useState<Vote[]>([])
+  const [links, setLinks] = useState<LinkRow[]>([])
+  const [members, setMembers] = useState<PMember[]>([])
+  const [newTask, setNewTask] = useState('')
+  const [newIdea, setNewIdea] = useState('')
+  const [linkTitle, setLinkTitle] = useState('')
+  const [linkUrl, setLinkUrl] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [plan, setPlan] = useState(false)
+  const busyRef = useRef(false)
+
+  const loadAll = useCallback(async () => {
+    if (busyRef.current) return
+    busyRef.current = true
+    const [t, i, l, m] = await Promise.all([
+      supabase.from('tasks').select('id, project_id, title, status, assignee_id, due_date').eq('project_id', project.id).order('created_at'),
+      supabase.from('ideas').select('id, content, created_by, created_at').eq('project_id', project.id).order('created_at', { ascending: false }),
+      supabase.from('project_links').select('id, title, url, created_by').eq('project_id', project.id).order('created_at', { ascending: false }),
+      supabase.from('project_members').select('user_id, role').eq('project_id', project.id),
+    ])
+    setTasks((t.data as Task[] | null) ?? []); setLinks((l.data as LinkRow[] | null) ?? []); setMembers((m.data as PMember[] | null) ?? [])
+    const ideaRows = (i.data as Idea[] | null) ?? []
+    setIdeas(ideaRows)
+    if (ideaRows.length) {
+      const { data: v } = await supabase.from('idea_votes').select('idea_id, user_id').in('idea_id', ideaRows.map((x) => x.id))
+      setVotes((v as Vote[] | null) ?? [])
+    } else setVotes([])
+    busyRef.current = false
+  }, [project.id])
+
+  useEffect(() => {
+    void loadAll()
+    const t = setInterval(() => { void loadAll() }, 15_000)
+    return () => clearInterval(t)
+  }, [loadAll])
+
+  const isOwner = members.some((m) => m.user_id === me && m.role === 'owner')
+  const name = (id: string | null) => (id ? users[id]?.display_name ?? 'Someone' : 'Unassigned')
+  const fail = (what: string) => setError(`Could not ${what}.`)
+
+  async function addTask() {
+    const title = newTask.trim(); if (!title) return
+    const { error } = await supabase.from('tasks').insert({ project_id: project.id, title })
+    if (error) return fail('add that task'); setNewTask(''); await loadAll(); onChanged()
+  }
+  async function patchTask(id: string, patch: Partial<Pick<Task, 'status' | 'assignee_id' | 'due_date'>>) {
+    setTasks((p) => p.map((t) => (t.id === id ? { ...t, ...patch } : t)))
+    const { error } = await supabase.from('tasks').update(patch).eq('id', id)
+    if (error) { fail('update that task'); await loadAll() } else onChanged()
+  }
+  async function moveTask(t: Task, dir: 1 | -1) {
+    const idx = COLS.findIndex((c) => c.id === t.status) + dir
+    if (idx >= 0 && idx < COLS.length) await patchTask(t.id, { status: COLS[idx].id })
+  }
+  async function delTask(id: string) { await supabase.from('tasks').delete().eq('id', id); await loadAll(); onChanged() }
+
+  async function addIdea() {
+    const content = newIdea.trim(); if (!content) return
+    const { error } = await supabase.from('ideas').insert({ project_id: project.id, content })
+    if (error) return fail('post that idea'); setNewIdea(''); await loadAll()
+  }
+  async function toggleVote(i: Idea) {
+    const mine = votes.some((v) => v.idea_id === i.id && v.user_id === me)
+    if (mine) await supabase.from('idea_votes').delete().eq('idea_id', i.id).eq('user_id', me)
+    else await supabase.from('idea_votes').insert({ idea_id: i.id })
+    await loadAll()
+  }
+  async function delIdea(id: string) { await supabase.from('ideas').delete().eq('id', id); await loadAll() }
+
+  async function addLink() {
+    const title = linkTitle.trim(), url = linkUrl.trim()
+    if (!title || !/^https?:\/\/\S+$/i.test(url)) return setError('Enter a title and a link starting with http:// or https://')
+    const { error } = await supabase.from('project_links').insert({ project_id: project.id, title, url })
+    if (error) return fail('add that link'); setLinkTitle(''); setLinkUrl(''); setError(null); await loadAll()
+  }
+  async function delLink(id: string) { await supabase.from('project_links').delete().eq('id', id); await loadAll() }
+
+  async function addMember(id: string) {
+    const { error } = await supabase.from('project_members').insert({ project_id: project.id, user_id: id, role: 'member' })
+    if (error) fail('add that person'); await loadAll()
+  }
+  async function removeMember(id: string) {
+    if (!window.confirm(id === me ? 'Leave this project?' : 'Remove this person from the project?')) return
+    const { error } = await supabase.from('project_members').delete().eq('project_id', project.id).eq('user_id', id)
+    if (error) return fail('remove that person')
+    if (id === me) { onChanged(); onBack() } else await loadAll()
+  }
+  async function toggleArchive() {
+    await supabase.from('projects').update({ status: project.status === 'active' ? 'archived' : 'active' }).eq('id', project.id)
+    onChanged(); onBack()
+  }
+  async function deleteProject() {
+    if (!window.confirm(`Delete "${project.name}" and all its tasks, ideas and links? The chat stays.`)) return
+    const { error } = await supabase.from('projects').delete().eq('id', project.id)
+    if (error) return fail('delete the project'); onChanged(); onBack()
+  }
+
+  const nonMembers = list.filter((u) => !members.some((m) => m.user_id === u.id))
+  const sortedIdeas = [...ideas].sort((a, b) => votes.filter((v) => v.idea_id === b.id).length - votes.filter((v) => v.idea_id === a.id).length)
+
+  return (
+    <div className="mx-auto h-full w-full max-w-5xl overflow-y-auto p-4 pb-10 sm:p-8">
+      <button onClick={onBack} className="mb-3 flex items-center gap-2 rounded-xl p-1.5 text-sm text-mute hover:text-fg"><ArrowLeft size={16} />All projects</button>
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="font-display text-2xl font-bold">{project.name}{project.status === 'archived' && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 align-middle text-xs font-normal text-mute">Archived</span>}</h2>
+          {project.description && <p className="mt-1 whitespace-pre-wrap text-sm text-mute">{project.description}</p>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {project.conversation_id && <button className="btn-quiet" onClick={() => onOpenChat(project.conversation_id!)}><MessageCircle size={16} />Project chat</button>}
+          <button className="btn-primary" onClick={() => setPlan(true)}><Sparkles size={16} />Plan with AI</button>
+        </div>
+      </div>
+
+      <div role="tablist" className="mt-5 flex gap-1 overflow-x-auto rounded-xl border border-white/10 p-1 text-sm">
+        {([['tasks', `Tasks (${tasks.length})`], ['ideas', `Ideas (${ideas.length})`], ['links', `Links (${links.length})`], ['team', `People (${members.length})`]] as ['tasks' | 'ideas' | 'links' | 'team', string][]).map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)} className={`shrink-0 rounded-lg px-4 py-2 font-medium transition ${tab === id ? 'bg-white/10 text-fg' : 'text-mute hover:text-fg'}`}>{label}</button>
+        ))}
+      </div>
+      {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
+
+      {tab === 'tasks' && (
+        <div className="mt-4">
+          <form onSubmit={(e) => { e.preventDefault(); void addTask() }} className="flex gap-2">
+            <input className="field" placeholder="Add a task and press Enter" aria-label="New task" value={newTask} maxLength={200} onChange={(e) => setNewTask(e.target.value)} />
+            <button className="btn-primary" aria-label="Add task"><Plus size={18} /></button>
+          </form>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {COLS.map((col) => (
+              <div key={col.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <h3 className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-mute">{col.label}<span>{tasks.filter((t) => t.status === col.id).length}</span></h3>
+                <ul className="space-y-2">
+                  {tasks.filter((t) => t.status === col.id).map((t) => (
+                    <li key={t.id} className="rounded-xl border border-white/10 bg-surface p-3">
+                      <p className={`break-words text-sm ${t.status === 'done' ? 'text-mute line-through' : ''}`}>{t.title}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <select aria-label="Assignee" className="field !w-auto !rounded-lg !py-1 text-xs" value={t.assignee_id ?? ''} onChange={(e) => void patchTask(t.id, { assignee_id: e.target.value || null })}>
+                          <option value="">Unassigned</option>{members.map((m) => <option key={m.user_id} value={m.user_id}>{name(m.user_id)}</option>)}
+                        </select>
+                        <input type="date" aria-label="Due date" className="field !w-auto !rounded-lg !py-1 text-xs" value={t.due_date ?? ''} onChange={(e) => void patchTask(t.id, { due_date: e.target.value || null })} />
+                      </div>
+                      <div className="mt-2 flex items-center gap-1">
+                        <button className="rounded-lg p-1.5 text-mute hover:bg-white/10 disabled:opacity-30" disabled={col.id === 'todo'} onClick={() => moveTask(t, -1)} aria-label="Move back"><ArrowLeft size={14} /></button>
+                        <button className="rounded-lg p-1.5 text-mute hover:bg-white/10 disabled:opacity-30" disabled={col.id === 'done'} onClick={() => moveTask(t, 1)} aria-label="Move forward"><ArrowRight size={14} /></button>
+                        <button className="ml-auto rounded-lg p-1.5 text-mute hover:bg-white/10 hover:text-bad" onClick={() => delTask(t.id)} aria-label="Delete task"><Trash2 size={14} /></button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === 'ideas' && (
+        <div className="mt-4">
+          <form onSubmit={(e) => { e.preventDefault(); void addIdea() }} className="flex gap-2">
+            <input className="field" placeholder="Share an idea" aria-label="New idea" value={newIdea} maxLength={500} onChange={(e) => setNewIdea(e.target.value)} />
+            <button className="btn-primary">Post</button>
+          </form>
+          {sortedIdeas.length === 0 && <p className="mt-6 text-center text-sm text-mute">No ideas yet. Post the first one.</p>}
+          <ul className="mt-4 space-y-2">
+            {sortedIdeas.map((i) => {
+              const n = votes.filter((v) => v.idea_id === i.id).length
+              const mine = votes.some((v) => v.idea_id === i.id && v.user_id === me)
+              return (
+                <li key={i.id} className="panel flex items-start gap-3 !rounded-2xl p-3">
+                  <button onClick={() => toggleVote(i)} aria-pressed={mine} aria-label="Vote for this idea" className={`flex shrink-0 flex-col items-center rounded-xl px-3 py-1.5 text-xs transition ${mine ? 'bg-accent/20 text-accent' : 'bg-white/5 text-mute hover:text-fg'}`}><ThumbsUp size={16} />{n}</button>
+                  <div className="min-w-0 flex-1"><p className="break-words text-sm">{i.content}</p><p className="mt-0.5 text-xs text-mute">{name(i.created_by)} · {new Date(i.created_at).toLocaleDateString()}</p></div>
+                  {(i.created_by === me || isOwner) && <button onClick={() => delIdea(i.id)} aria-label="Delete idea" className="rounded-lg p-1.5 text-mute hover:bg-white/10 hover:text-bad"><Trash2 size={14} /></button>}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {tab === 'links' && (
+        <div className="mt-4">
+          <form onSubmit={(e) => { e.preventDefault(); void addLink() }} className="grid gap-2 sm:grid-cols-[1fr_2fr_auto]">
+            <input className="field" placeholder="Title" aria-label="Link title" value={linkTitle} maxLength={100} onChange={(e) => setLinkTitle(e.target.value)} />
+            <input className="field" placeholder="https://…" aria-label="Link address" value={linkUrl} maxLength={500} onChange={(e) => setLinkUrl(e.target.value)} />
+            <button className="btn-primary">Add</button>
+          </form>
+          {links.length === 0 && <p className="mt-6 text-center text-sm text-mute">Save repos, designs, docs and anything else the team needs.</p>}
+          <ul className="mt-4 space-y-2">
+            {links.map((l) => (
+              <li key={l.id} className="panel flex items-center gap-3 !rounded-2xl p-3">
+                <Link2 size={18} className="shrink-0 text-accent" />
+                <a href={l.url} target="_blank" rel="noopener noreferrer" className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{l.title}</span><span className="block truncate text-xs text-mute">{l.url}</span></a>
+                <a href={l.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${l.title}`} className="rounded-lg p-1.5 text-mute hover:bg-white/10"><ExternalLink size={14} /></a>
+                {(l.created_by === me || isOwner) && <button onClick={() => delLink(l.id)} aria-label="Delete link" className="rounded-lg p-1.5 text-mute hover:bg-white/10 hover:text-bad"><Trash2 size={14} /></button>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {tab === 'team' && (
+        <div className="mt-4">
+          <ul className="space-y-1">
+            {members.map((m) => (
+              <li key={m.user_id} className="panel flex items-center gap-3 !rounded-2xl p-3">
+                <Avatar path={users[m.user_id]?.avatar_path} name={name(m.user_id)} size={36} />
+                <span className="min-w-0 flex-1 truncate text-sm">{name(m.user_id)}{m.user_id === me ? ' (you)' : ''}</span>
+                <span className="text-xs text-mute">{m.role === 'owner' ? 'Owner' : 'Member'}</span>
+                {m.role !== 'owner' && (isOwner || m.user_id === me) && <button className="text-xs text-bad" onClick={() => removeMember(m.user_id)}>{m.user_id === me ? 'Leave' : 'Remove'}</button>}
+              </li>
+            ))}
+          </ul>
+          {isOwner && nonMembers.length > 0 && (
+            <label className="mt-4 block text-sm"><span className="mb-1 flex items-center gap-1.5 text-mute"><UserPlus size={14} />Add someone</span>
+              <select className="field" value="" onChange={(e) => e.target.value && void addMember(e.target.value)}><option value="">Choose…</option>{nonMembers.map((u) => <option key={u.id} value={u.id}>{u.display_name}</option>)}</select></label>
+          )}
+          {isOwner && (
+            <div className="mt-8 flex flex-wrap gap-2 border-t border-white/10 pt-4">
+              <button className="btn-quiet" onClick={toggleArchive}><Archive size={16} />{project.status === 'active' ? 'Archive project' : 'Restore project'}</button>
+              <button className="btn-quiet text-bad" onClick={deleteProject}><Trash2 size={16} />Delete project</button>
+            </div>
+          )}
+        </div>
+      )}
+      {plan && <PlanDialog project={project} tasks={tasks} onClose={() => setPlan(false)} onAdded={() => { void loadAll(); onChanged() }} />}
+    </div>
+  )
+}
+
+function ProjectsView({ onOpenChat }: { onOpenChat: (conversationId: string) => void }) {
+  const [projects, setProjects] = useState<Project[] | null>(null)
+  const [counts, setCounts] = useState<Record<string, { total: number; done: number }>>({})
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [showNew, setShowNew] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
+
+  const load = useCallback(async () => {
+    const [p, t] = await Promise.all([
+      supabase.from('projects').select('id, name, description, status, conversation_id, created_by, created_at').order('created_at', { ascending: false }),
+      supabase.from('tasks').select('project_id, status'),
+    ])
+    setProjects((p.data as Project[] | null) ?? [])
+    const c: Record<string, { total: number; done: number }> = {}
+    for (const r of (t.data as { project_id: string; status: string }[] | null) ?? []) {
+      c[r.project_id] ??= { total: 0, done: 0 }
+      c[r.project_id].total++
+      if (r.status === 'done') c[r.project_id].done++
+    }
+    setCounts(c)
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const open = projects?.find((p) => p.id === openId)
+  if (open) return <ProjectDetail project={open} onBack={() => setOpenId(null)} onOpenChat={onOpenChat} onChanged={() => void load()} />
+
+  const shown = (projects ?? []).filter((p) => (p.status === 'archived') === showArchived)
+  return (
+    <section className="mx-auto h-full w-full max-w-4xl overflow-y-auto p-4 pb-10 sm:p-8">
+      <div className="flex items-center gap-3">
+        <h2 className="flex-1 font-display text-2xl font-bold">Projects</h2>
+        <button className="btn-primary" onClick={() => setShowNew(true)}><Plus size={16} />New project</button>
+      </div>
+      <p className="mt-1 text-sm text-mute">Plan, assign and track what you are building together. Every project gets its own chat.</p>
+      <div className="mt-4 flex gap-2 text-sm">
+        <button onClick={() => setShowArchived(false)} aria-pressed={!showArchived} className={`rounded-full px-3.5 py-1.5 ${!showArchived ? 'bg-accent font-semibold text-ink' : 'bg-white/5 text-mute'}`}>Active</button>
+        <button onClick={() => setShowArchived(true)} aria-pressed={showArchived} className={`rounded-full px-3.5 py-1.5 ${showArchived ? 'bg-accent font-semibold text-ink' : 'bg-white/5 text-mute'}`}>Archived</button>
+      </div>
+      {projects === null && <div className="mt-5 grid gap-3 sm:grid-cols-2">{[0, 1].map((i) => <div key={i} className="h-32 animate-pulse rounded-2xl bg-white/5" />)}</div>}
+      {projects && shown.length === 0 && (
+        <div className="mt-12 text-center text-sm text-mute"><FolderKanban className="mx-auto mb-2 text-accent" size={32} />{showArchived ? 'Nothing archived.' : 'No projects yet. Start one and invite the people you build with.'}</div>
+      )}
+      <ul className="mt-5 grid gap-3 sm:grid-cols-2">
+        {shown.map((p) => {
+          const c = counts[p.id] ?? { total: 0, done: 0 }
+          const pct = c.total ? Math.round((c.done / c.total) * 100) : 0
+          return (
+            <li key={p.id}>
+              <button onClick={() => setOpenId(p.id)} className="panel block h-full w-full !rounded-2xl p-4 text-left transition hover:border-accent/50">
+                <h3 className="truncate font-display text-lg font-bold">{p.name}</h3>
+                <p className="mt-1 line-clamp-2 min-h-[2.5rem] text-sm text-mute">{p.description || 'No description'}</p>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-gradient-to-r from-accent to-indigo-400" style={{ width: `${pct}%` }} /></div>
+                <p className="mt-1.5 text-xs text-mute">{c.total ? `${c.done} of ${c.total} tasks done` : 'No tasks yet'}</p>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      {showNew && <NewProjectDialog onClose={() => setShowNew(false)} onCreated={(id) => { setShowNew(false); void load().then(() => setOpenId(id)) }} />}
+    </section>
+  )
+}
+
+// ---- src/features/settings/SettingsView.tsx ----
+
+function Toggle({ on, onChange, label, hint, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string; disabled?: boolean }) {
+  return (
+    <button role="switch" aria-checked={on} disabled={disabled} onClick={() => onChange(!on)}
+      className="flex w-full items-center justify-between gap-4 rounded-xl px-3 py-3 text-left transition hover:bg-white/5 disabled:opacity-50">
+      <span><span className="block text-sm font-medium">{label}</span>{hint && <span className="block text-xs text-mute">{hint}</span>}</span>
+      <span className={`relative h-6 w-11 shrink-0 rounded-full transition ${on ? 'bg-accent' : 'bg-white/15'}`}>
+        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} />
+      </span>
+    </button>
+  )
+}
+
+function SettingsView() {
+  const { profile, session, refresh, signOut } = useAuth()
+  const [name, setName] = useState(profile?.display_name ?? '')
+  const [bio, setBio] = useState(profile?.bio ?? '')
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const prefs = readPrefs(profile?.notification_prefs)
+  const perm = notifySupported() ? Notification.permission : 'denied'
+
+  async function saveProfile() {
+    if (!profile) return
+    if (!name.trim()) return setMsg({ ok: false, text: 'Your name cannot be empty.' })
+    setBusy(true)
+    const { error } = await supabase.from('profiles').update({ display_name: name.trim().slice(0, 60), bio: bio.trim().slice(0, 500) || null }).eq('id', profile.id)
+    setBusy(false)
+    if (error) return setMsg({ ok: false, text: 'Could not save your profile.' })
+    await refresh(); setMsg({ ok: true, text: 'Profile saved.' })
+  }
+
+  async function onPhoto(picked: File | undefined) {
+    if (!picked || !session) return
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(picked.type)) return setMsg({ ok: false, text: 'Choose a PNG, JPEG, or WebP image.' })
+    setBusy(true); setMsg(null)
+    try {
+      const file = await compressImage(picked, 512, 0.85)
+      const path = `${session.user.id}/avatar-${Date.now()}.jpg`
+      const up = await supabase.storage.from('avatars').upload(path, file, { contentType: 'image/jpeg' })
+      if (up.error) throw up.error
+      const { error } = await supabase.from('profiles').update({ avatar_path: path }).eq('id', session.user.id)
+      if (error) throw error
+      await refresh(); setMsg({ ok: true, text: 'Photo updated.' })
+    } catch { setMsg({ ok: false, text: 'Could not update your photo.' }) }
+    setBusy(false)
+  }
+
+  async function savePrefs(patch: Partial<NotifyPrefs>) {
+    if (!profile) return
+    const next = { ...prefs, ...patch }
+    const { error } = await supabase.from('profiles').update({ notification_prefs: next }).eq('id', profile.id)
+    if (error) setMsg({ ok: false, text: 'Could not save that setting.' }); else await refresh()
+  }
+
+  async function toggleBrowser(on: boolean) {
+    if (!on) return savePrefs({ browser: false })
+    const result = await askPermission()
+    if (result !== 'granted') return setMsg({ ok: false, text: 'Your browser blocked notifications. Allow them for this site in the browser settings, then try again.' })
+    await savePrefs({ browser: true })
+  }
+
+  return (
+    <section className="mx-auto h-full w-full max-w-2xl space-y-5 overflow-y-auto p-4 pb-10 sm:p-8">
+      <h2 className="font-display text-2xl font-bold">Settings</h2>
+      {msg && <p role="status" className={`rounded-xl px-4 py-2.5 text-sm ${msg.ok ? 'bg-ok/10 text-ok' : 'bg-bad/10 text-bad'}`}>{msg.text}</p>}
+
+      <div className="panel p-5">
+        <h3 className="font-display text-lg font-bold">Profile</h3>
+        <div className="mt-4 flex items-center gap-4">
+          {profile && <Avatar path={profile.avatar_path} name={profile.display_name} size={64} />}
+          <div>
+            <input ref={fileRef} type="file" hidden accept="image/png,image/jpeg,image/webp" onChange={(e) => void onPhoto(e.target.files?.[0])} />
+            <button className="btn-quiet" onClick={() => fileRef.current?.click()} disabled={busy}>Change photo</button>
+            <p className="mt-1 text-xs text-mute">@{profile?.username}</p>
+          </div>
+        </div>
+        <label className="mt-4 block text-sm"><span className="mb-1 block text-mute">Display name</span><input className="field" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} /></label>
+        <label className="mt-3 block text-sm"><span className="mb-1 block text-mute">About you</span><textarea className="field min-h-[72px]" value={bio} maxLength={500} onChange={(e) => setBio(e.target.value)} /></label>
+        <button className="btn-primary mt-4" onClick={saveProfile} disabled={busy}>Save profile</button>
+      </div>
+
+      <div className="panel p-5">
+        <h3 className="flex items-center gap-2 font-display text-lg font-bold"><Bell size={18} className="text-accent" />Notifications</h3>
+        <p className="mt-1 text-sm text-mute">Alerts appear while Common Room is open in a tab, including a background tab. Closed apps cannot notify yet.</p>
+        <div className="mt-3 space-y-1">
+          <Toggle on={prefs.browser && perm === 'granted'} onChange={toggleBrowser} disabled={!notifySupported()} label="Desktop and phone notifications" hint={!notifySupported() ? 'This browser does not support notifications.' : perm === 'denied' ? 'Blocked in your browser settings.' : 'Shows a system alert when a message arrives and the tab is hidden.'} />
+          <Toggle on={prefs.sound} onChange={(v) => savePrefs({ sound: v })} label="Sound" hint="A soft beep for new messages." />
+          <Toggle on={prefs.preview} onChange={(v) => savePrefs({ preview: v })} label="Show message text in alerts" hint="Turn off to show only “New message”." />
+        </div>
+        <p className="mt-3 text-xs text-mute">Mute a single chat from its Details panel.</p>
+      </div>
+
+      <div className="panel p-5">
+        <h3 className="flex items-center gap-2 font-display text-lg font-bold"><ShieldCheck size={18} className="text-accent" />Privacy and data</h3>
+        <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm text-mute">
+          <li>Messages are protected in transit and at rest, but they are <strong className="text-fg">not end-to-end encrypted</strong>. Anyone with database access to this project can technically read them.</li>
+          <li>Disappearing messages are deleted from the database and their files are removed. Messages marked important are kept.</li>
+          <li>The AI assistant sends only the text needed for your request to Groq, an outside service.</li>
+          <li>Video calls connect your devices directly. Signalling goes through this app; the video itself does not.</li>
+          <li>Others in a chat can see when you have read their messages.</li>
+        </ul>
+      </div>
+
+      <div className="panel p-5">
+        <h3 className="font-display text-lg font-bold">Account</h3>
+        <p className="mt-2 text-sm text-mute">Signed in as {session?.user.email}</p>
+        <p className="mt-1 text-sm text-mute">To delete your account and data, ask an admin to remove it.</p>
+        <button className="btn-quiet mt-4" onClick={signOut}><LogOut size={16} />Sign out</button>
+      </div>
+    </section>
   )
 }
 
@@ -1402,7 +2471,8 @@ function PendingScreen() {
 
 // ---- src/components/Shell.tsx ----
 
-type View = 'chats' | 'ai' | 'inbox'
+type View = 'chats' | 'projects' | 'library' | 'ai' | 'settings' | 'inbox'
+interface Toast { id: number; title: string; body: string; convId: string }
 
 function shortTime(iso: string | null): string {
   if (!iso) return ''
@@ -1426,6 +2496,11 @@ function Shell() {
   const [query, setQuery] = useState('')
   const [pendingCount, setPendingCount] = useState(0)
   const [showNew, setShowNew] = useState(false)
+  const [toasts, setToasts] = useState<Toast[]>([])
+
+  const convosRef = useRef<ConversationSummary[] | null>(null); convosRef.current = convos
+  const stateRef = useRef({ view, selectedId, titleOf: (c: ConversationSummary) => '' as string })
+  const prefsRef = useRef(readPrefs(profile?.notification_prefs)); prefsRef.current = readPrefs(profile?.notification_prefs)
 
   const loadConvos = useCallback(async () => {
     const { data } = await supabase.rpc('my_conversations')
@@ -1438,6 +2513,8 @@ function Shell() {
     }
   }, [me])
 
+  const usersRef = useRef(users); usersRef.current = users
+
   const loadPending = useCallback(async () => {
     if (!isAdmin) return
     const { count } = await supabase.from('approval_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending')
@@ -1448,7 +2525,30 @@ function Shell() {
     void loadConvos(); void loadPending()
     const ch = supabase.channel('shell')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'approval_requests' }, () => { void loadPending() })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => { void loadConvos() })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (p) => {
+        void loadConvos()
+        const m = p.new as { id: string; conversation_id: string; sender_id: string; content: string; message_type: string }
+        if (m.sender_id === me || m.message_type === 'assistant') return
+        const c = convosRef.current?.find((x) => x.id === m.conversation_id)
+        if (c?.muted) return
+        const st = stateRef.current
+        const viewing = document.visibilityState === 'visible' && st.view === 'chats' && st.selectedId === m.conversation_id
+        if (viewing) return
+        const prefs = prefsRef.current
+        const who = usersRef.current[m.sender_id]?.display_name ?? 'Someone'
+        const chat = c ? st.titleOf(c) : 'New message'
+        const what = m.message_type === 'system' ? (m.content === 'started a video call' ? 'started a video call' : m.content)
+          : m.message_type === 'gif' ? 'sent a GIF' : m.message_type === 'image' ? 'sent a photo' : m.message_type === 'video' ? 'sent a video' : m.message_type === 'file' ? 'sent a file'
+          : prefs.preview ? m.content : 'sent a message'
+        const body = `${who}: ${what}`
+        if (prefs.sound) beep()
+        if (document.visibilityState === 'hidden' && prefs.browser) showNotification(chat, body, () => { setSelectedId(m.conversation_id); setView('chats'); setShowContent(true) })
+        else if (document.visibilityState === 'visible') {
+          const id = Date.now() + Math.random()
+          setToasts((t) => [...t.slice(-2), { id, title: chat, body, convId: m.conversation_id }])
+          setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5000)
+        }
+      })
       .subscribe()
     // New groups you are added to have no message yet, so refresh the list periodically and when the tab regains focus.
     const poll = setInterval(() => { void loadConvos() }, 30_000)
@@ -1456,6 +2556,13 @@ function Shell() {
     document.addEventListener('visibilitychange', onVisible)
     return () => { clearInterval(poll); document.removeEventListener('visibilitychange', onVisible); void supabase.removeChannel(ch) }
   }, [loadConvos, loadPending, me])
+
+  useEffect(() => {
+    const purge = () => { void supabase.functions.invoke('purge-expired').catch(() => {}) }
+    purge()
+    const t = setInterval(purge, 10 * 60_000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     if (!menuOpen) return
@@ -1467,6 +2574,8 @@ function Shell() {
   const titleOf = (c: ConversationSummary) => c.type === 'group' ? (c.title ?? 'Group') : (users[otherOf[c.id]]?.display_name ?? 'Chat')
   const avatarOf = (c: ConversationSummary) => c.type === 'group' ? c.avatar_path : (users[otherOf[c.id]]?.avatar_path ?? null)
 
+  stateRef.current = { view, selectedId, titleOf }
+
   const go = (v: View) => { setView(v); setShowContent(true); setMenuOpen(false) }
   const open = (id: string) => { setShowNew(false); setSelectedId(id); setView('chats'); setShowContent(true); void loadConvos() }
 
@@ -1474,9 +2583,14 @@ function Shell() {
   const selected = convos?.find((c) => c.id === selectedId) ?? null
   const totalUnread = (convos ?? []).reduce((n, c) => n + (c.muted ? 0 : c.unread_count), 0)
 
+  useEffect(() => { document.title = totalUnread > 0 ? `(${totalUnread}) Common Room` : 'Common Room' }, [totalUnread])
+
   const navItems: { id: View; label: string; icon: typeof MessageCircle; badge?: number; show: boolean }[] = [
     { id: 'chats', label: 'Chats', icon: MessageCircle, badge: totalUnread, show: true },
+    { id: 'projects', label: 'Projects', icon: FolderKanban, show: true },
+    { id: 'library', label: 'Files', icon: FolderOpen, show: true },
     { id: 'ai', label: 'AI Assistant', icon: Sparkles, show: true },
+    { id: 'settings', label: 'Settings', icon: Settings, show: true },
     { id: 'inbox', label: 'Admin Bot', icon: ShieldCheck, badge: pendingCount, show: isAdmin },
   ]
   const Nav = ({ onPick }: { onPick: (v: View) => void }) => (
@@ -1561,10 +2675,15 @@ function Shell() {
             <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
             <AdminInbox />
           </div>
-        ) : view === 'ai' ? (
+        ) : view === 'ai' || view === 'projects' || view === 'library' || view === 'settings' ? (
           <>
             <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
-            <div className="min-h-0 flex-1"><AssistantView /></div>
+            <div className="min-h-0 flex-1">
+              {view === 'ai' && <AssistantView />}
+              {view === 'projects' && <ProjectsView onOpenChat={open} />}
+              {view === 'library' && <LibraryView titleOf={(id) => { const c = convos?.find((x) => x.id === id); return c ? titleOf(c) : 'a chat' }} />}
+              {view === 'settings' && <SettingsView />}
+            </div>
           </>
         ) : selected ? (
           <ChatView key={selected.id} convo={selected} title={titleOf(selected)} avatarPath={avatarOf(selected)}
@@ -1597,6 +2716,15 @@ function Shell() {
         </div>
       )}
 
+      <div className="pointer-events-none fixed right-3 top-3 z-[70] flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2 pt-[env(safe-area-inset-top)]" aria-live="polite">
+        {toasts.map((t) => (
+          <button key={t.id} onClick={() => { setSelectedId(t.convId); setView('chats'); setShowContent(true); setToasts((x) => x.filter((y) => y.id !== t.id)) }}
+            className="glass pointer-events-auto animate-pop rounded-2xl border border-white/10 bg-surface p-3 text-left shadow-2xl">
+            <span className="block truncate text-sm font-semibold">{t.title}</span>
+            <span className="block truncate text-xs text-mute">{t.body}</span>
+          </button>
+        ))}
+      </div>
       {showNew && <NewChatDialog onClose={() => setShowNew(false)} onOpen={open} />}
     </div>
   )
