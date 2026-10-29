@@ -53,7 +53,7 @@ body { margin: 0; color: #ecebf6; background: radial-gradient(900px 520px at 8% 
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'https://esm.sh/react@18.3.1'
 import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
-import { Archive, ArrowLeft, ArrowRight, Ban, Bell, BellOff, Check, CheckCheck, Download, ExternalLink, FileText, Film, Flag, FolderKanban, FolderOpen, Image as ImageIcon, Link2, LogOut, Menu, MessageCircle, Mic, MicOff, Monitor, MonitorOff, MoreHorizontal, Paperclip, Pencil, PhoneOff, Plus, Reply, Search, Send, Settings, Settings2, ShieldCheck, Sparkles, Star, ThumbsUp, Timer, Trash2, UserPlus, Users, Video, VideoOff, X } from 'https://esm.sh/lucide-react@0.441.0?deps=react@18.3.1'
+import { Archive, ArrowLeft, ArrowRight, Ban, Bell, BellOff, Check, CheckCheck, Download, ExternalLink, FileText, Film, Flag, FolderKanban, FolderOpen, Image as ImageIcon, Link2, LogOut, Menu, MessageCircle, Mic, MicOff, Monitor, MonitorOff, MoreHorizontal, Paperclip, Pencil, PhoneOff, Plus, Reply, Search, Send, Settings, Settings2, ShieldCheck, Sparkles, Star, ThumbsUp, Timer, Trash2, UserCheck, UserMinus, UserPlus, Users, Video, VideoOff, X } from 'https://esm.sh/lucide-react@0.441.0?deps=react@18.3.1'
 import hljs from 'https://esm.sh/highlight.js@11.10.0/lib/common'
 
 // ---- config (public values only; access is enforced by database security rules) ----
@@ -290,6 +290,12 @@ function AuthProvider({ children }: { children: ReactNode }) {
     })
     return () => sub.subscription.unsubscribe()
   }, [load])
+
+  useEffect(() => {
+    if (!session) return
+    const t = setInterval(() => { void load(session) }, 60_000)
+    return () => clearInterval(t)
+  }, [session, load])
 
   const refresh = useCallback(async () => { await load(session) }, [load, session])
   const signOut = useCallback(async () => { await supabase.auth.signOut() }, [])
@@ -1183,6 +1189,20 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     if (error) setMuted(!next); else onRead()
   }
 
+  async function deleteForMe() {
+    if (!window.confirm('Delete this chat for you?\n\nYour copy of the history is removed. Other people keep theirs, and the chat comes back (empty) if someone writes again.')) return
+    const { error } = await supabase.rpc('clear_chat', { p_cid: convo.id })
+    if (error) return setError('Could not delete the chat.')
+    onRead(); onBack()
+  }
+
+  async function deleteForEveryone() {
+    if (!window.confirm(`Delete "${title}" for everyone?\n\nEvery message and file in this group is removed permanently. This cannot be undone.`)) return
+    const { error } = await supabase.functions.invoke('delete-chat', { body: { conversation_id: convo.id } })
+    if (error) return setError('Could not delete the group. Only group admins can do this.')
+    onRead(); onBack()
+  }
+
   async function startCall() {
     setError(null)
     const { error } = await supabase.rpc('post_call_message', { p_cid: convo.id })
@@ -1244,7 +1264,8 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   const visible = msgs.filter((m) => !m.expires_at || Date.parse(m.expires_at) > nowMs)
   const typingNames = Object.entries(typing).filter(([id, t]) => id !== me && nowMs - t < 4000).map(([id]) => nameOf(id))
   const nonMembers = list.filter((u) => !members.some((m) => m.user_id === u.id))
-  const others = members.filter((m) => m.user_id !== me)
+  const liveMembers = list.length ? members.filter((m) => users[m.user_id]) : members
+  const others = liveMembers.filter((m) => m.user_id !== me)
   const seenBy = (m: Message) => others.filter((o) => o.last_read_at && Date.parse(o.last_read_at) >= Date.parse(m.created_at))
   const lastMineId = [...visible].reverse().find((m) => m.sender_id === me && !m.deleted_at && ['text', 'image', 'video', 'file', 'gif'].includes(m.message_type))?.id
   const seenLabel = (m: Message) => {
@@ -1272,7 +1293,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
           <div className="min-w-0 flex-1">
             <h2 className="flex items-center gap-1.5 truncate text-[15px] font-semibold leading-tight">{title}{muted && <BellOff size={13} className="shrink-0 text-mute" aria-label="Muted" />}</h2>
             <p className={`truncate text-xs ${typingNames.length ? 'text-accent' : 'text-mute'}`} aria-live="polite">
-              {typingNames.length ? (isGroup ? `${typingNames.join(', ')} typing…` : 'typing…') : `${isGroup ? `${members.length || ''} members` : 'Private chat'}${disappearLabel ? ` · disappears after ${disappearLabel}` : ''}`}
+              {typingNames.length ? (isGroup ? `${typingNames.join(', ')} typing…` : 'typing…') : `${isGroup ? `${liveMembers.length || ''} members` : 'Private chat'}${disappearLabel ? ` · disappears after ${disappearLabel}` : ''}`}
             </p>
           </div>
           <button onClick={() => void startCall()} aria-label="Start a video call" className="rounded-xl p-2.5 text-mute transition hover:bg-white/5 hover:text-fg"><Video size={18} /></button>
@@ -1436,7 +1457,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
 
           <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">{isGroup ? 'Members' : 'Person'}</h4>
           <ul className="mt-2 space-y-1">
-            {members.map((m) => (
+            {liveMembers.map((m) => (
               <li key={m.user_id} className="flex items-center gap-2 rounded-xl p-1.5 text-sm">
                 <Avatar path={users[m.user_id]?.avatar_path} name={nameOf(m.user_id)} size={32} />
                 <span className="min-w-0 flex-1 truncate">{nameOf(m.user_id)}{m.user_id === me ? ' (you)' : ''}</span>
@@ -1452,6 +1473,10 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
               </select></label>
           )}
           {!isGroup && otherUserId && <button className="btn-quiet mt-4 w-full" onClick={toggleBlock}><Ban size={16} />{blocked ? 'Unblock' : 'Block'} {nameOf(otherUserId)}</button>}
+
+          <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">Delete</h4>
+          <button className="btn-quiet mt-2 w-full text-bad" onClick={deleteForMe}><Trash2 size={16} />Delete chat for me</button>
+          {canManage && <button className="btn-quiet mt-2 w-full text-bad" onClick={deleteForEveryone}><Trash2 size={16} />Delete group for everyone</button>}
 
           <h4 className="mt-6 text-xs font-semibold uppercase tracking-wide text-mute">Important messages</h4>
           {kept.length === 0 ? <p className="mt-1 text-sm text-mute">Mark a message important and it will never disappear.</p> : <ul className="mt-2 space-y-2 text-sm">{kept.map((p) => <li key={p.id} className="rounded-xl bg-white/5 p-2.5"><span className="text-xs text-mute">{nameOf(p.sender_id)}</span><p className="break-words">{p.content || `[${p.message_type}]`}</p></li>)}</ul>}
@@ -2292,6 +2317,98 @@ function AdminInbox() {
   )
 }
 
+// ---- src/features/admin/MembersView.tsx ----
+
+interface Person {
+  id: string; username: string; display_name: string; avatar_path: string | null
+  approval_status: 'pending' | 'approved' | 'rejected' | 'banned'; created_at: string
+}
+interface RoleRow { user_id: string; role: 'admin' | 'member'; is_original: boolean }
+type MemberFilter = 'active' | 'removed' | 'other'
+
+function MembersView() {
+  const { session } = useAuth()
+  const me = session!.user.id
+  const [people, setPeople] = useState<Person[] | null>(null)
+  const [roles, setRoles] = useState<Record<string, RoleRow>>({})
+  const [filter, setFilter] = useState<MemberFilter>('active')
+  const [q, setQ] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    const [p, r] = await Promise.all([
+      supabase.from('profiles').select('id, username, display_name, avatar_path, approval_status, created_at').order('created_at'),
+      supabase.from('user_roles').select('user_id, role, is_original'),
+    ])
+    if (p.error) return setError('Could not load members.')
+    setPeople((p.data as Person[] | null) ?? [])
+    setRoles(Object.fromEntries(((r.data as RoleRow[] | null) ?? []).map((x) => [x.user_id, x])))
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const inFilter = (p: Person, f: MemberFilter) => f === 'active' ? p.approval_status === 'approved' : f === 'removed' ? p.approval_status === 'banned' : (p.approval_status === 'pending' || p.approval_status === 'rejected')
+  const counts = useMemo(() => ({
+    active: (people ?? []).filter((p) => inFilter(p, 'active')).length,
+    removed: (people ?? []).filter((p) => inFilter(p, 'removed')).length,
+    other: (people ?? []).filter((p) => inFilter(p, 'other')).length,
+  }), [people])
+  const shown = (people ?? []).filter((p) => inFilter(p, filter) && `${p.display_name} ${p.username}`.toLowerCase().includes(q.toLowerCase()))
+
+  async function change(p: Person, status: 'approved' | 'banned') {
+    let reason: string | null = null
+    if (status === 'banned') {
+      if (!window.confirm(`Remove ${p.display_name} (@${p.username})?\n\nThey lose access immediately and can no longer read or send messages. Their old messages stay. You can restore them later.`)) return
+      reason = window.prompt('Reason (optional, only admins see this)') || null
+    } else if (!window.confirm(`Restore access for ${p.display_name}?`)) return
+    setBusy(p.id); setError(null)
+    const { error } = await supabase.rpc('set_member_status', { p_user: p.id, p_status: status, p_reason: reason })
+    setBusy(null)
+    if (error) setError(/original/.test(error.message) ? 'The owner cannot be removed.' : /own status/.test(error.message) ? 'You cannot change your own status.' : 'That did not work. Reload and try again.')
+    await load()
+  }
+
+  return (
+    <section className="mx-auto w-full max-w-3xl p-4 pb-10 sm:p-8">
+      <h2 className="font-display text-2xl font-bold">Members</h2>
+      <p className="mt-1 text-sm text-mute">Everyone who has joined. Removing someone cuts off their access straight away, and you can restore them later.</p>
+
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        {([['active', 'Active', counts.active], ['removed', 'Removed', counts.removed], ['other', 'Waiting / declined', counts.other]] as [MemberFilter, string, number][]).map(([id, label, n]) => (
+          <button key={id} onClick={() => setFilter(id)} aria-pressed={filter === id} className={`rounded-full px-3.5 py-1.5 text-sm transition ${filter === id ? 'bg-accent font-semibold text-ink' : 'bg-white/5 text-mute hover:text-fg'}`}>{label} ({n})</button>
+        ))}
+        <input className="field ml-auto max-w-[12rem] !py-1.5" placeholder="Search members" aria-label="Search members" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
+      {people === null && <div className="mt-5 space-y-2">{[0, 1, 2].map((i) => <div key={i} className="h-16 animate-pulse rounded-2xl bg-white/5" />)}</div>}
+      {people && shown.length === 0 && <p className="mt-10 text-center text-sm text-mute">No one here.</p>}
+
+      <ul className="mt-5 space-y-2">
+        {shown.map((p) => {
+          const role = roles[p.id]
+          const canAct = p.id !== me && !role?.is_original && (p.approval_status === 'approved' || p.approval_status === 'banned')
+          return (
+            <li key={p.id} className="panel flex items-center gap-3 !rounded-2xl p-3">
+              <Avatar path={p.avatar_path} name={p.display_name} size={44} />
+              <div className="min-w-0 flex-1">
+                <p className="flex flex-wrap items-center gap-x-2 truncate text-sm font-semibold">
+                  {p.display_name}{p.id === me && <span className="text-xs font-normal text-mute">(you)</span>}
+                  {role?.is_original ? <span className="rounded-full bg-accent/20 px-2 py-0.5 text-[11px] font-semibold text-accent">Owner</span>
+                    : role?.role === 'admin' ? <span className="rounded-full bg-accent/20 px-2 py-0.5 text-[11px] font-semibold text-accent">Admin</span> : null}
+                </p>
+                <p className="truncate text-xs text-mute">@{p.username} · joined {new Date(p.created_at).toLocaleDateString()}</p>
+              </div>
+              {canAct && (p.approval_status === 'approved'
+                ? <button className="btn-quiet !px-3 !py-2 text-sm text-bad" disabled={busy === p.id} onClick={() => change(p, 'banned')}><UserMinus size={16} />Remove</button>
+                : <button className="btn-quiet !px-3 !py-2 text-sm" disabled={busy === p.id} onClick={() => change(p, 'approved')}><UserCheck size={16} />Restore</button>)}
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
 // ---- src/features/auth/AuthScreen.tsx ----
 
 function AuthScreen() {
@@ -2471,7 +2588,7 @@ function PendingScreen() {
 
 // ---- src/components/Shell.tsx ----
 
-type View = 'chats' | 'projects' | 'library' | 'ai' | 'settings' | 'inbox'
+type View = 'chats' | 'projects' | 'library' | 'ai' | 'settings' | 'inbox' | 'members'
 interface Toast { id: number; title: string; body: string; convId: string }
 
 function shortTime(iso: string | null): string {
@@ -2592,6 +2709,7 @@ function Shell() {
     { id: 'ai', label: 'AI Assistant', icon: Sparkles, show: true },
     { id: 'settings', label: 'Settings', icon: Settings, show: true },
     { id: 'inbox', label: 'Admin Bot', icon: ShieldCheck, badge: pendingCount, show: isAdmin },
+    { id: 'members', label: 'Members', icon: Users, show: isAdmin },
   ]
   const Nav = ({ onPick }: { onPick: (v: View) => void }) => (
     <nav className="space-y-1" aria-label="Main">
@@ -2674,6 +2792,11 @@ function Shell() {
           <div className="min-h-0 flex-1 overflow-y-auto">
             <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
             <AdminInbox />
+          </div>
+        ) : view === 'members' && isAdmin ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
+            <MembersView />
           </div>
         ) : view === 'ai' || view === 'projects' || view === 'library' || view === 'settings' ? (
           <>
