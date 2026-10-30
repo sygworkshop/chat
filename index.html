@@ -53,7 +53,7 @@ body { margin: 0; color: #ecebf6; background: radial-gradient(900px 520px at 8% 
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'https://esm.sh/react@18.3.1'
 import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
-import { Archive, ArrowLeft, ArrowRight, Ban, Bell, BellOff, Check, CheckCheck, Download, ExternalLink, FileText, Film, Flag, FolderKanban, FolderOpen, Image as ImageIcon, Link2, LogOut, Menu, MessageCircle, Mic, MicOff, Monitor, MonitorOff, MoreHorizontal, Paperclip, Pencil, PhoneOff, Plus, Reply, Search, Send, Settings, Settings2, ShieldCheck, Sparkles, Star, ThumbsUp, Timer, Trash2, UserCheck, UserMinus, UserPlus, Users, Video, VideoOff, X } from 'https://esm.sh/lucide-react@0.441.0?deps=react@18.3.1'
+import { Archive, ArrowLeft, ArrowRight, Ban, BarChart3, Bell, BellOff, Check, CheckCheck, Download, ExternalLink, FileText, Film, Flag, FolderKanban, FolderOpen, Image as ImageIcon, Link2, LogOut, Menu, MessageCircle, Mic, MicOff, Monitor, MonitorOff, MoreHorizontal, Paperclip, Pencil, PhoneOff, Plus, Reply, Search, Send, Settings, Settings2, ShieldCheck, Smile, Sparkles, Star, ThumbsUp, Timer, Trash2, UserCheck, UserMinus, UserPlus, Users, Video, VideoOff, X } from 'https://esm.sh/lucide-react@0.441.0?deps=react@18.3.1'
 import hljs from 'https://esm.sh/highlight.js@11.10.0/lib/common'
 
 // ---- config (public values only; access is enforced by database security rules) ----
@@ -101,7 +101,7 @@ interface Message {
   conversation_id: string
   sender_id: string
   content: string
-  message_type: 'text' | 'image' | 'file' | 'video' | 'gif' | 'system' | 'assistant'
+  message_type: 'text' | 'image' | 'file' | 'video' | 'audio' | 'gif' | 'poll' | 'system' | 'assistant'
   reply_to_message_id: string | null
   created_at: string
   updated_at: string
@@ -119,6 +119,10 @@ interface Attachment {
   mime_type: string
   size_bytes: number
 }
+
+interface PollData { id: string; message_id: string; question: string; multiple: boolean; closed: boolean; created_by: string }
+interface PollOption { id: string; poll_id: string; label: string; position: number }
+interface PollVote { option_id: string; poll_id: string; user_id: string }
 
 // ---- src/lib/images.ts ----
 /** Shrinks a photo in the browser before upload so shared images stay tiny (usually 100-400 KB). */
@@ -146,7 +150,7 @@ async function compressImage(file: File, maxDim: number, quality = 0.8): Promise
 const QUOTA_BYTES = 100 * 1024 * 1024
 const MAX_FILE_BYTES = 3 * 1024 * 1024
 const MAX_VIDEO_BYTES = 15 * 1024 * 1024
-const ALLOWED_FILES = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/plain', 'video/mp4', 'video/webm', 'video/quicktime']
+const ALLOWED_FILES = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/plain', 'video/mp4', 'video/webm', 'video/quicktime', 'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg']
 
 const urlCache = new Map<string, { url: string; at: number }>()
 
@@ -170,11 +174,11 @@ function fmtSize(n: number): string {
 }
 
 // ---- src/lib/notify.ts ----
-interface NotifyPrefs { browser: boolean; sound: boolean; preview: boolean }
+interface NotifyPrefs { browser: boolean; sound: boolean; preview: boolean; presence: boolean }
 
 function readPrefs(raw: unknown): NotifyPrefs {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<NotifyPrefs>
-  return { browser: r.browser === true, sound: r.sound !== false, preview: r.preview !== false }
+  return { browser: r.browser === true, sound: r.sound !== false, preview: r.preview !== false, presence: r.presence !== false }
 }
 const notifySupported = () => typeof Notification !== 'undefined'
 async function askPermission(): Promise<NotificationPermission> {
@@ -414,19 +418,34 @@ function Markdown({ text }: { text: string }) {
 
 // ---- src/features/chat/Directory.tsx ----
 
-interface DirectoryState { users: Record<string, DirectoryUser>; list: DirectoryUser[]; reload: () => void }
-const DirCtx = createContext<DirectoryState>({ users: {}, list: [], reload: () => {} })
+interface DirectoryState { users: Record<string, DirectoryUser>; list: DirectoryUser[]; reload: () => void; online: Set<string> }
+const DirCtx = createContext<DirectoryState>({ users: {}, list: [], reload: () => {}, online: new Set() })
 
 function DirectoryProvider({ children }: { children: ReactNode }) {
+  const { session, profile } = useAuth()
+  const me = session?.user.id
+  const showPresence = readPrefs(profile?.notification_prefs).presence
   const [list, setList] = useState<DirectoryUser[]>([])
+  const [online, setOnline] = useState<Set<string>>(new Set())
+
   const reload = useCallback(() => {
     supabase.from('profiles').select('id, username, display_name, avatar_path')
       .eq('approval_status', 'approved').order('display_name')
       .then(({ data }) => setList((data as DirectoryUser[] | null) ?? []))
   }, [])
   useEffect(() => { reload() }, [reload])
+
+  // Online dots: people share presence only if they have it switched on (Settings). If you hide yours you do not see theirs.
+  useEffect(() => {
+    if (!me || !showPresence) { setOnline(new Set()); return }
+    const ch = supabase.channel('presence:community', { config: { private: true, presence: { key: me } } })
+    ch.on('presence', { event: 'sync' }, () => setOnline(new Set(Object.keys(ch.presenceState()))))
+    ch.subscribe((status) => { if (status === 'SUBSCRIBED') void ch.track({ at: Date.now() }) })
+    return () => { void supabase.removeChannel(ch) }
+  }, [me, showPresence])
+
   const users = Object.fromEntries(list.map((u) => [u.id, u]))
-  return <DirCtx.Provider value={{ users, list, reload }}>{children}</DirCtx.Provider>
+  return <DirCtx.Provider value={{ users, list, reload, online }}>{children}</DirCtx.Provider>
 }
 
 const useDirectory = () => useContext(DirCtx)
@@ -435,7 +454,7 @@ const useDirectory = () => useContext(DirCtx)
 
 function AttachmentView({ att }: { att: Attachment }) {
   const [url, setUrl] = useState<string | null>(null)
-  const media = att.mime_type.startsWith('image/') || att.mime_type.startsWith('video/')
+  const media = att.mime_type.startsWith('image/') || att.mime_type.startsWith('video/') || att.mime_type.startsWith('audio/')
   useEffect(() => {
     if (!media) return
     let live = true
@@ -447,6 +466,11 @@ function AttachmentView({ att }: { att: Attachment }) {
     return url
       ? <img src={url} alt={att.file_name} className="mt-1 max-h-80 max-w-full rounded-xl object-cover" loading="lazy" />
       : <div className="mt-1 h-32 w-48 animate-pulse rounded-xl bg-white/5" />
+  }
+  if (att.mime_type.startsWith('audio/')) {
+    return url
+      ? <audio src={url} controls preload="metadata" className="mt-1 h-10 w-full min-w-[14rem] max-w-xs" />
+      : <div className="mt-1 h-10 w-56 animate-pulse rounded-xl bg-white/5" />
   }
   if (att.mime_type.startsWith('video/')) {
     return url
@@ -595,6 +619,186 @@ function NewChatDialog({ onClose, onOpen }: { onClose: () => void; onOpen: (conv
         </button>
       </div>
     </div>
+  )
+}
+
+// ---- src/features/chat/Polls.tsx ----
+
+function PollView({ poll, options, votes, me, canClose, onVote, onClose }: {
+  poll: PollData; options: PollOption[]; votes: PollVote[]; me: string; canClose: boolean
+  onVote: (optionId: string, on: boolean) => void; onClose: () => void
+}) {
+  const voters = new Set(votes.map((v) => v.user_id)).size
+  const total = votes.length
+  const sorted = [...options].sort((a, b) => a.position - b.position)
+  return (
+    <div className="min-w-[15rem]">
+      <p className="mb-2 break-words text-[15px] font-semibold leading-snug">{poll.question}</p>
+      <ul className="space-y-1.5">
+        {sorted.map((o) => {
+          const n = votes.filter((v) => v.option_id === o.id).length
+          const mine = votes.some((v) => v.option_id === o.id && v.user_id === me)
+          const pct = total ? Math.round((n / total) * 100) : 0
+          return (
+            <li key={o.id}>
+              <button disabled={poll.closed} onClick={() => onVote(o.id, !mine)} aria-pressed={mine}
+                className={`relative w-full overflow-hidden rounded-xl border px-3 py-2 text-left text-sm transition ${mine ? 'border-white/60' : 'border-white/15'} ${poll.closed ? 'cursor-default' : 'hover:border-white/50'}`}>
+                <span className="absolute inset-y-0 left-0 bg-white/20 transition-all" style={{ width: `${pct}%` }} />
+                <span className="relative flex items-center gap-2">
+                  {mine && <Check size={14} className="shrink-0" />}
+                  <span className="min-w-0 flex-1 break-words">{o.label}</span>
+                  <span className="shrink-0 text-xs opacity-80">{n}</span>
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      <p className="mt-2 text-xs opacity-80">{voters} {voters === 1 ? 'person' : 'people'} voted · {poll.multiple ? 'Choose several' : 'Choose one'}{poll.closed ? ' · Closed' : ''}</p>
+      {canClose && !poll.closed && <button onClick={onClose} className="mt-1 text-xs underline underline-offset-2 opacity-80 hover:opacity-100">Close poll</button>}
+    </div>
+  )
+}
+
+function CreatePollDialog({ onCancel, onCreate }: { onCancel: () => void; onCreate: (question: string, options: string[], multiple: boolean) => Promise<string | null> }) {
+  const [question, setQuestion] = useState('')
+  const [options, setOptions] = useState(['', ''])
+  const [multiple, setMultiple] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit() {
+    const opts = options.map((o) => o.trim()).filter(Boolean)
+    if (!question.trim()) return setError('Ask a question.')
+    if (opts.length < 2) return setError('Add at least two options.')
+    setBusy(true); setError(null)
+    const err = await onCreate(question.trim(), opts, multiple)
+    setBusy(false)
+    if (err) setError(err)
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex animate-fade-in items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Create a poll">
+      <div className="panel flex max-h-[90dvh] w-full max-w-md animate-pop flex-col overflow-y-auto rounded-b-none p-5 sm:rounded-b-3xl">
+        <div className="flex items-center justify-between"><h2 className="font-display text-xl font-bold">Create a poll</h2><button onClick={onCancel} aria-label="Close" className="rounded-xl p-2 hover:bg-white/5"><X size={18} /></button></div>
+        <input className="field mt-3" placeholder="Question" aria-label="Poll question" value={question} maxLength={200} onChange={(e) => setQuestion(e.target.value)} autoFocus />
+        <div className="mt-3 space-y-2">
+          {options.map((o, i) => (
+            <div key={i} className="flex gap-2">
+              <input className="field" placeholder={`Option ${i + 1}`} aria-label={`Option ${i + 1}`} value={o} maxLength={80} onChange={(e) => setOptions((p) => p.map((x, j) => (j === i ? e.target.value : x)))} />
+              {options.length > 2 && <button onClick={() => setOptions((p) => p.filter((_, j) => j !== i))} aria-label={`Remove option ${i + 1}`} className="rounded-xl p-2 text-mute hover:bg-white/5"><X size={16} /></button>}
+            </div>
+          ))}
+        </div>
+        {options.length < 6 && <button className="btn-quiet mt-2 self-start !py-1.5 text-sm" onClick={() => setOptions((p) => [...p, ''])}><Plus size={14} />Add option</button>}
+        <label className="mt-4 flex items-center gap-2 text-sm"><input type="checkbox" checked={multiple} onChange={(e) => setMultiple(e.target.checked)} />Allow choosing several options</label>
+        {error && <p role="alert" className="mt-2 text-sm text-bad">{error}</p>}
+        <button className="btn-primary mt-4" onClick={submit} disabled={busy}>{busy ? 'Posting…' : 'Post poll'}</button>
+      </div>
+    </div>
+  )
+}
+
+// ---- src/features/chat/VoiceRecorder.tsx ----
+
+/** Records a voice note with the microphone. Sends nothing until you press send. */
+function VoiceRecorder({ onSend, onCancel }: { onSend: (file: File) => void; onCancel: () => void }) {
+  const [secs, setSecs] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const recRef = useRef<MediaRecorder | null>(null)
+  const chunks = useRef<Blob[]>([])
+  const cancelled = useRef(false)
+
+  useEffect(() => {
+    let live = true
+    let timer: ReturnType<typeof setInterval> | undefined
+    let stream: MediaStream | null = null
+    cancelled.current = false
+    chunks.current = []
+    void (async () => {
+      try {
+        if (typeof MediaRecorder === 'undefined') throw new Error('unsupported')
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        if (!live) { stream.getTracks().forEach((t) => t.stop()); return }
+        const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t))
+        const rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined)
+        recRef.current = rec
+        rec.ondataavailable = (e) => { if (e.data.size) chunks.current.push(e.data) }
+        rec.onstop = () => {
+          stream?.getTracks().forEach((t) => t.stop())
+          if (cancelled.current) return
+          const base = (rec.mimeType || mime || 'audio/webm').split(';')[0]
+          const ext = base.includes('mp4') ? 'm4a' : base.includes('ogg') ? 'ogg' : 'webm'
+          const blob = new Blob(chunks.current, { type: base })
+          if (blob.size < 1000) return setError('That recording was too short.')
+          onSend(new File([blob], `voice-${Date.now()}.${ext}`, { type: base }))
+        }
+        rec.start()
+        timer = setInterval(() => setSecs((s) => { if (s + 1 >= 300 && rec.state === 'recording') rec.stop(); return s + 1 }), 1000)
+      } catch { setError('Microphone access is blocked or not available in this browser.') }
+    })()
+    return () => {
+      live = false
+      if (timer) clearInterval(timer)
+      cancelled.current = true
+      if (recRef.current && recRef.current.state === 'recording') recRef.current.stop()
+      stream?.getTracks().forEach((t) => t.stop())
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const mm = String(Math.floor(secs / 60)).padStart(1, '0')
+  const ss = String(secs % 60).padStart(2, '0')
+  return (
+    <div className="glass flex items-center gap-3 rounded-2xl border border-white/10 p-2 shadow-xl shadow-black/30" role="group" aria-label="Recording a voice note">
+      <button onClick={() => { cancelled.current = true; recRef.current?.state === 'recording' && recRef.current.stop(); onCancel() }} aria-label="Cancel recording" className="rounded-xl p-2.5 text-mute transition hover:bg-white/10 hover:text-bad"><Trash2 size={20} /></button>
+      <div className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+        {error ? <span className="text-bad" role="alert">{error}</span> : <><span className="h-2.5 w-2.5 animate-pulse rounded-full bg-bad" /><span className="tabular-nums">{mm}:{ss}</span><span className="text-xs text-mute">Recording… up to 5 minutes</span></>}
+      </div>
+      <button onClick={() => recRef.current?.state === 'recording' && recRef.current.stop()} disabled={!!error} aria-label="Send voice note" className="btn-primary h-10 w-10 shrink-0 !rounded-xl !px-0"><Send size={18} /></button>
+    </div>
+  )
+}
+
+// ---- src/features/chat/Mentions.tsx ----
+
+/** Turns @username into a highlighted mention when it matches a real member (or @assistant). */
+function MentionText({ text, usernames, myUsername, onBubble }: { text: string; usernames: Set<string>; myUsername?: string; onBubble?: boolean }) {
+  const parts = text.split(/(@[a-z0-9_]{3,24})/gi)
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (p.startsWith('@')) {
+          const u = p.slice(1).toLowerCase()
+          if (u === 'assistant' || usernames.has(u)) {
+            const me = !!myUsername && u === myUsername.toLowerCase()
+            const cls = onBubble ? 'bg-white/25 text-white' : me ? 'bg-warn/25 text-warn' : 'bg-accent/20 text-accent'
+            return <span key={i} className={`rounded px-1 font-semibold ${cls}`}>{p}</span>
+          }
+        }
+        return p
+      })}
+    </>
+  )
+}
+
+function mentionQuery(text: string): string | null {
+  const m = /(?:^|\s)@([a-z0-9_]{0,24})$/i.exec(text)
+  return m ? m[1].toLowerCase() : null
+}
+
+function MentionPicker({ query, people, onPick }: { query: string; people: DirectoryUser[]; onPick: (username: string) => void }) {
+  const matches = people.filter((u) => u.username.startsWith(query) || u.display_name.toLowerCase().startsWith(query)).slice(0, 5)
+  const showAi = 'assistant'.startsWith(query)
+  if (!matches.length && !showAi) return null
+  return (
+    <ul className="glass absolute bottom-full left-0 z-20 mb-2 w-64 animate-pop overflow-hidden rounded-2xl border border-white/10 bg-surface p-1 shadow-2xl" role="listbox" aria-label="Mention someone">
+      {matches.map((u) => (
+        <li key={u.id}><button role="option" aria-selected={false} onClick={() => onPick(u.username)} className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-sm hover:bg-white/10">
+          <Avatar path={u.avatar_path} name={u.display_name} size={26} /><span className="min-w-0 flex-1 truncate">{u.display_name}</span><span className="text-xs text-mute">@{u.username}</span>
+        </button></li>
+      ))}
+      {showAi && <li><button role="option" aria-selected={false} onClick={() => onPick('assistant')} className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-sm hover:bg-white/10"><span className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-accent/20 text-xs text-accent">AI</span><span className="flex-1">Assistant</span><span className="text-xs text-mute">@assistant</span></button></li>}
+    </ul>
   )
 }
 
@@ -863,7 +1067,7 @@ function timeLeft(expires: string): string {
 function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Props) {
   const { session } = useAuth()
   const me = session!.user.id
-  const { users, list, reload: reloadDir } = useDirectory()
+  const { users, list, reload: reloadDir, online: onlineIds } = useDirectory()
   const usersRef = useRef(users); usersRef.current = users
 
   const [msgs, setMsgs] = useState<Message[]>([])
@@ -871,7 +1075,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   const [atts, setAtts] = useState<Attachment[]>([])
   const [loading, setLoading] = useState(true)
   const [hasMore, setHasMore] = useState(false)
-  const [text, setText] = useState('')
+  const [text, setText] = useState(() => { try { return localStorage.getItem(`draft:${convo.id}`) ?? '' } catch { return '' } })
   const [sending, setSending] = useState(false)
   const [aiBusy, setAiBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -892,6 +1096,12 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   const [muted, setMuted] = useState(convo.muted)
   const [gifOpen, setGifOpen] = useState(false)
   const [callOpen, setCallOpen] = useState(false)
+  const [polls, setPolls] = useState<PollData[]>([])
+  const [pollOptions, setPollOptions] = useState<PollOption[]>([])
+  const [pollVotes, setPollVotes] = useState<PollVote[]>([])
+  const [showPoll, setShowPoll] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [plusOpen, setPlusOpen] = useState(false)
 
   const msgsRef = useRef(msgs); msgsRef.current = msgs
   const bchRef = useRef<RealtimeChannel | null>(null)
@@ -909,13 +1119,26 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
 
   const fetchExtras = useCallback(async (ids: string[]) => {
     if (!ids.length) return
-    const [r, a] = await Promise.all([
+    const [r, a, pr] = await Promise.all([
       supabase.from('message_reactions').select('message_id, user_id, emoji').in('message_id', ids),
       supabase.from('attachments').select('id, message_id, storage_path, file_name, mime_type, size_bytes').in('message_id', ids),
+      supabase.from('polls').select('id, message_id, question, multiple, closed, created_by').in('message_id', ids),
     ])
     const set = new Set(ids)
     setReactions((prev) => [...prev.filter((x) => !set.has(x.message_id)), ...((r.data as Reaction[] | null) ?? [])])
     setAtts((prev) => [...prev.filter((x) => !set.has(x.message_id)), ...((a.data as Attachment[] | null) ?? [])])
+    const pl = (pr.data as PollData[] | null) ?? []
+    setPolls((prev) => [...prev.filter((x) => !set.has(x.message_id)), ...pl])
+    if (pl.length) {
+      const pids = pl.map((p) => p.id)
+      const [o, v] = await Promise.all([
+        supabase.from('poll_options').select('id, poll_id, label, position').in('poll_id', pids),
+        supabase.from('poll_votes').select('option_id, poll_id, user_id').in('poll_id', pids),
+      ])
+      const ps = new Set(pids)
+      setPollOptions((prev) => [...prev.filter((x) => !ps.has(x.poll_id)), ...((o.data as PollOption[] | null) ?? [])])
+      setPollVotes((prev) => [...prev.filter((x) => !ps.has(x.poll_id)), ...((v.data as PollVote[] | null) ?? [])])
+    }
   }, [])
 
   const loadKept = useCallback(async () => {
@@ -1116,11 +1339,11 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
       setSending(false)
       return setError(isVideo ? 'Videos must be 15 MB or smaller. Trim it, or share a link.' : 'Files must be 3 MB or smaller. Share a link for bigger ones.')
     }
-    const kind = file.type.startsWith('image/') ? 'image' : isVideo ? 'video' : 'file'
+    const kind = file.type.startsWith('image/') ? 'image' : isVideo ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'file'
     const { data: msg, error: e1 } = await supabase.from('messages').insert({
       conversation_id: convo.id, sender_id: me, content: '', message_type: kind, reply_to_message_id: replyTo?.id ?? null,
     }).select('*').single()
-    if (e1 || !msg) { setSending(false); return setError('Could not send the file.') }
+    if (e1 || !msg) { setSending(false); return setError(kind === 'audio' ? 'Voice notes need the latest database update (see README: run the SQL update).' : 'Could not send the file.') }
     const path = `${convo.id}/${msg.id}-${file.name.replace(/[^\w.-]+/g, '_').slice(-80)}`
     const up = await supabase.storage.from('attachments').upload(path, file, { contentType: file.type, cacheControl: '3600' })
     const overQuota = !!up.error && /row-level security|policy|exceed/i.test(up.error.message)
@@ -1187,6 +1410,25 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     setMuted(next)
     const { error } = await supabase.from('conversation_members').update({ muted: next }).eq('conversation_id', convo.id).eq('user_id', me)
     if (error) setMuted(!next); else onRead()
+  }
+
+  async function votePoll(optionId: string, on: boolean) {
+    const { error } = await supabase.rpc('vote_poll', { p_option: optionId, p_on: on })
+    if (error) setError(/closed/.test(error.message) ? 'This poll is closed.' : 'Could not save your vote.')
+    const poll = polls.find((p) => p.id === pollOptions.find((o) => o.id === optionId)?.poll_id)
+    if (poll) await fetchExtras([poll.message_id])
+    signalRefresh()
+  }
+  async function closePoll(poll: PollData) {
+    const { error } = await supabase.rpc('close_poll', { p_poll: poll.id })
+    if (error) setError('Only the person who made the poll can close it.')
+    await fetchExtras([poll.message_id]); signalRefresh()
+  }
+  async function createPoll(question: string, options: string[], multiple: boolean): Promise<string | null> {
+    const { error } = await supabase.rpc('create_poll', { p_cid: convo.id, p_question: question, p_options: options, p_multiple: multiple })
+    if (error) return /schema cache|does not exist|Could not find/i.test(error.message) ? 'Polls need the latest database update (see README: run the SQL update).' : 'Could not post the poll.'
+    stickRef.current = true; setShowPoll(false)
+    return null
   }
 
   async function deleteForMe() {
@@ -1267,7 +1509,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
   const liveMembers = list.length ? members.filter((m) => users[m.user_id]) : members
   const others = liveMembers.filter((m) => m.user_id !== me)
   const seenBy = (m: Message) => others.filter((o) => o.last_read_at && Date.parse(o.last_read_at) >= Date.parse(m.created_at))
-  const lastMineId = [...visible].reverse().find((m) => m.sender_id === me && !m.deleted_at && ['text', 'image', 'video', 'file', 'gif'].includes(m.message_type))?.id
+  const lastMineId = [...visible].reverse().find((m) => m.sender_id === me && !m.deleted_at && ['text', 'image', 'video', 'audio', 'file', 'gif', 'poll'].includes(m.message_type))?.id
   const seenLabel = (m: Message) => {
     const s = seenBy(m)
     if (!s.length) return 'Sent'
@@ -1275,7 +1517,20 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
     if (s.length === others.length) return 'Seen by everyone'
     return s.length <= 2 ? `Seen by ${s.map((x) => nameOf(x.user_id)).join(', ')}` : `Seen by ${s.length}`
   }
+  const usernameSet = useMemo(() => new Set(list.map((u) => u.username.toLowerCase())), [list])
+  const mq = editing ? null : mentionQuery(text)
+  const mentionPeople = liveMembers.filter((m) => m.user_id !== me).map((m) => users[m.user_id]).filter(Boolean)
+  const otherOnline = !!otherUserId && onlineIds.has(otherUserId)
+  function pickMention(username: string) {
+    setText((t) => t.replace(/@([a-z0-9_]{0,24})$/i, `@${username} `))
+    taRef.current?.focus()
+  }
   const disappearLabel = disappear === 24 ? '24 hours' : disappear === 168 ? '7 days' : null
+
+  useEffect(() => {
+    if (editing) return
+    try { if (text) localStorage.setItem(`draft:${convo.id}`, text); else localStorage.removeItem(`draft:${convo.id}`) } catch { /* storage blocked */ }
+  }, [text, editing, convo.id])
 
   useEffect(() => {
     const el = taRef.current
@@ -1289,11 +1544,11 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="glass flex items-center gap-2 border-b border-white/5 px-3 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:pt-2.5">
           <button onClick={onBack} aria-label="Back to chats" className="rounded-xl p-2 text-fg transition hover:bg-white/5 md:hidden"><ArrowLeft size={20} /></button>
-          <Avatar path={avatarPath} name={title} size={40} />
+          <span className="relative shrink-0"><Avatar path={avatarPath} name={title} size={40} />{otherOnline && <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-surface bg-ok" aria-label="Online" />}</span>
           <div className="min-w-0 flex-1">
             <h2 className="flex items-center gap-1.5 truncate text-[15px] font-semibold leading-tight">{title}{muted && <BellOff size={13} className="shrink-0 text-mute" aria-label="Muted" />}</h2>
             <p className={`truncate text-xs ${typingNames.length ? 'text-accent' : 'text-mute'}`} aria-live="polite">
-              {typingNames.length ? (isGroup ? `${typingNames.join(', ')} typing…` : 'typing…') : `${isGroup ? `${liveMembers.length || ''} members` : 'Private chat'}${disappearLabel ? ` · disappears after ${disappearLabel}` : ''}`}
+              {typingNames.length ? (isGroup ? `${typingNames.join(', ')} typing…` : 'typing…') : `${isGroup ? `${liveMembers.length || ''} members` : (otherOnline ? 'Online' : 'Private chat')}${disappearLabel ? ` · disappears after ${disappearLabel}` : ''}`}
             </p>
           </div>
           <button onClick={() => void startCall()} aria-label="Start a video call" className="rounded-xl p-2.5 text-mute transition hover:bg-white/5 hover:text-fg"><Video size={18} /></button>
@@ -1369,8 +1624,15 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
                       {target && !deleted && <p className={`mb-1.5 truncate rounded-md border-l-2 bg-black/10 px-2 py-1 text-xs ${mine && !isAi ? 'border-white/60 text-white/85' : 'border-accent text-mute'}`}>{nameOf(target.sender_id)}: {target.deleted_at ? 'Deleted message' : target.content || `[${target.message_type}]`}</p>}
                       {deleted ? <p className="text-sm italic">This message was deleted</p>
                         : isAi ? <Markdown text={m.content} />
+                        : m.message_type === 'poll' ? (() => {
+                            const poll = polls.find((p) => p.message_id === m.id)
+                            return poll
+                              ? <PollView poll={poll} options={pollOptions.filter((o) => o.poll_id === poll.id)} votes={pollVotes.filter((v) => v.poll_id === poll.id)} me={me}
+                                  canClose={poll.created_by === me || canManage} onVote={(id, on) => void votePoll(id, on)} onClose={() => void closePoll(poll)} />
+                              : <p className="text-sm">📊 {m.content}</p>
+                          })()
                         : m.message_type === 'gif' ? <img src={m.content} alt="GIF" loading="lazy" referrerPolicy="no-referrer" className="max-h-60 max-w-full rounded-xl" />
-                        : m.content && <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">{m.content}</p>}
+                        : m.content && <p className="whitespace-pre-wrap break-words text-[15px] leading-snug"><MentionText text={m.content} usernames={usernameSet} myUsername={users[me]?.username} onBubble={mine && !isAi} /></p>}
                       {!deleted && atts.filter((a) => a.message_id === m.id).map((a) => <AttachmentView key={a.id} att={a} />)}
                       <p className={`mt-1 flex items-center justify-end gap-1.5 text-[11px] ${mine && !isAi ? 'text-white/70' : 'text-mute'}`}>
                         {m.is_important && !deleted && <Star size={12} className="fill-current text-warn" aria-label="Important" />}
@@ -1421,6 +1683,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
 
         <footer className="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
           <div className="relative mx-auto w-full max-w-3xl">
+            {mq !== null && <MentionPicker query={mq} people={mentionPeople} onPick={pickMention} />}
             {gifOpen && <GifPicker onPick={(u) => void sendGif(u)} onClose={() => setGifOpen(false)} />}
             {(replyTo || editing) && (
               <div className="mb-2 flex animate-pop items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs">
@@ -1429,15 +1692,36 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
               </div>
             )}
             {error && <p role="alert" className="mb-2 text-sm text-bad">{error}</p>}
-            <div className="glass flex items-end gap-0.5 rounded-2xl border border-white/10 p-1.5 shadow-xl shadow-black/30">
-              <input ref={fileRef} type="file" hidden accept={ALLOWED_FILES.join(',')} onChange={(e) => void sendFile(e.target.files?.[0])} />
-              <button onClick={() => fileRef.current?.click()} disabled={sending || !!editing} aria-label="Attach a photo, video or file" className="rounded-xl p-2.5 text-mute transition hover:bg-white/10 hover:text-fg disabled:opacity-40"><Paperclip size={20} /></button>
-              <button onClick={() => setGifOpen((v) => !v)} disabled={!!editing} aria-label="Send a GIF" aria-pressed={gifOpen} className="rounded-xl px-2 py-2.5 text-xs font-bold text-mute transition hover:bg-white/10 hover:text-fg disabled:opacity-40">GIF</button>
-              <button onClick={() => setText((t) => /^@assistant\b/i.test(t) ? t : `@assistant ${t}`)} disabled={!!editing} aria-label="Ask the AI assistant" title="Ask the AI assistant" className="rounded-xl p-2.5 text-accent transition hover:bg-white/10 disabled:opacity-40"><Sparkles size={20} /></button>
-              <textarea ref={taRef} value={text} onChange={(e) => onType(e.target.value)} onKeyDown={onKey} rows={1} maxLength={4000} aria-label="Message"
-                placeholder="Write a message" className="max-h-32 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2.5 text-[15px] text-fg placeholder:text-mute/70 focus:outline-none" />
-              <button onClick={() => void send()} disabled={sending || !text.trim()} aria-label={editing ? 'Save edit' : 'Send message'} className="btn-primary h-10 w-10 shrink-0 !rounded-xl !px-0"><Send size={18} /></button>
-            </div>
+            {recording ? (
+              <VoiceRecorder onSend={(f) => { setRecording(false); void sendFile(f) }} onCancel={() => setRecording(false)} />
+            ) : (
+              <div className="glass flex items-end gap-1 rounded-2xl border border-white/10 p-1.5 shadow-xl shadow-black/30">
+                <input ref={fileRef} type="file" hidden accept={ALLOWED_FILES.join(',')} onChange={(e) => void sendFile(e.target.files?.[0])} />
+                <div className="relative">
+                  <button onClick={() => setPlusOpen((v) => !v)} disabled={!!editing} aria-label="Attach, GIF, voice note, poll or ask the AI" aria-expanded={plusOpen}
+                    className="rounded-xl p-2.5 text-mute transition hover:bg-white/10 hover:text-fg disabled:opacity-40"><Plus size={22} className={`transition ${plusOpen ? 'rotate-45' : ''}`} /></button>
+                  {plusOpen && (
+                    <>
+                      <button aria-label="Close menu" className="fixed inset-0 z-10 cursor-default" onClick={() => setPlusOpen(false)} />
+                      <div className="glass absolute bottom-full left-0 z-20 mb-2 w-60 animate-pop rounded-2xl border border-white/10 bg-surface p-1.5 shadow-2xl">
+                        {[
+                          { label: 'Photo, video or file', icon: Paperclip, run: () => fileRef.current?.click() },
+                          { label: 'GIF', icon: Smile, run: () => setGifOpen(true) },
+                          { label: 'Voice note', icon: Mic, run: () => setRecording(true) },
+                          { label: 'Poll', icon: BarChart3, run: () => setShowPoll(true) },
+                          { label: 'Ask the AI assistant', icon: Sparkles, run: () => setText((t) => /^@assistant\b/i.test(t) ? t : `@assistant ${t}`) },
+                        ].map(({ label, icon: Icon, run }) => (
+                          <button key={label} onClick={() => { setPlusOpen(false); run() }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition hover:bg-white/10"><Icon size={18} className="text-accent" />{label}</button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+                <textarea ref={taRef} value={text} onChange={(e) => onType(e.target.value)} onKeyDown={onKey} rows={1} maxLength={4000} aria-label="Message"
+                  placeholder="Write a message" className="max-h-32 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2.5 text-[15px] text-fg placeholder:text-mute/70 focus:outline-none" />
+                <button onClick={() => void send()} disabled={sending || !text.trim()} aria-label={editing ? 'Save edit' : 'Send message'} className="btn-primary h-10 w-10 shrink-0 !rounded-xl !px-0"><Send size={18} /></button>
+              </div>
+            )}
           </div>
         </footer>
       </section>
@@ -1484,6 +1768,7 @@ function ChatView({ convo, title, avatarPath, otherUserId, onBack, onRead }: Pro
           {atts.length === 0 ? <p className="mt-1 text-sm text-mute">No files yet.</p> : <div className="mt-2 space-y-1">{atts.map((a) => <AttachmentView key={a.id} att={a} />)}</div>}
         </aside>
       )}
+      {showPoll && <CreatePollDialog onCancel={() => setShowPoll(false)} onCreate={createPoll} />}
       {callOpen && <CallOverlay conversationId={convo.id} title={title} onClose={() => setCallOpen(false)} />}
     </div>
   )
@@ -2183,6 +2468,7 @@ function SettingsView() {
           <Toggle on={prefs.browser && perm === 'granted'} onChange={toggleBrowser} disabled={!notifySupported()} label="Desktop and phone notifications" hint={!notifySupported() ? 'This browser does not support notifications.' : perm === 'denied' ? 'Blocked in your browser settings.' : 'Shows a system alert when a message arrives and the tab is hidden.'} />
           <Toggle on={prefs.sound} onChange={(v) => savePrefs({ sound: v })} label="Sound" hint="A soft beep for new messages." />
           <Toggle on={prefs.preview} onChange={(v) => savePrefs({ preview: v })} label="Show message text in alerts" hint="Turn off to show only “New message”." />
+          <Toggle on={prefs.presence} onChange={(v) => savePrefs({ presence: v })} label="Show when I am online" hint="If you turn this off, you also stop seeing who else is online." />
         </div>
         <p className="mt-3 text-xs text-mute">Mute a single chat from its Details panel.</p>
       </div>
@@ -2409,6 +2695,126 @@ function MembersView() {
   )
 }
 
+// ---- src/features/moderation/ModerationView.tsx ----
+
+interface Report { id: string; reporter_id: string; message_id: string | null; target_user_id: string | null; reason: string; snapshot: string | null; status: 'open' | 'reviewed' | 'dismissed'; created_at: string }
+interface LogRow { id: number; actor_id: string | null; action: string; target_id: string | null; metadata: Record<string, unknown> | null; created_at: string }
+type Who = { display_name: string; username: string }
+
+function ModerationView() {
+  const [tab, setTab] = useState<'reports' | 'activity'>('reports')
+  const [reports, setReports] = useState<Report[] | null>(null)
+  const [logs, setLogs] = useState<LogRow[] | null>(null)
+  const [people, setPeople] = useState<Record<string, Who>>({})
+  const [showDone, setShowDone] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    const [r, l, p] = await Promise.all([
+      supabase.from('reports').select('id, reporter_id, message_id, target_user_id, reason, snapshot, status, created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('audit_logs').select('id, actor_id, action, target_id, metadata, created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('profiles').select('id, display_name, username'),
+    ])
+    if (r.error || l.error) setError('Could not load moderation data.')
+    setReports((r.data as Report[] | null) ?? []); setLogs((l.data as LogRow[] | null) ?? [])
+    setPeople(Object.fromEntries(((p.data as (Who & { id: string })[] | null) ?? []).map((x) => [x.id, x])))
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const who = (id: string | null) => (id && people[id] ? `${people[id].display_name} (@${people[id].username})` : id ? 'a member' : 'someone')
+
+  async function setStatus(r: Report, status: 'reviewed' | 'dismissed') {
+    setBusy(r.id); setError(null)
+    const { error } = await supabase.from('reports').update({ status }).eq('id', r.id)
+    setBusy(null)
+    if (error) setError('Could not update that report.')
+    await load()
+  }
+  async function deleteMessage(r: Report) {
+    if (!r.message_id || !window.confirm('Delete the reported message for everyone?')) return
+    setBusy(r.id); setError(null)
+    const { error } = await supabase.rpc('moderate_delete_message', { p_message: r.message_id, p_reason: r.reason })
+    if (error) setError('Could not delete that message.'); else await supabase.from('reports').update({ status: 'reviewed' }).eq('id', r.id)
+    setBusy(null); await load()
+  }
+  async function removeMember(r: Report) {
+    if (!r.target_user_id || !window.confirm(`Remove ${who(r.target_user_id)} from the community? You can restore them later in Members.`)) return
+    setBusy(r.id); setError(null)
+    const { error } = await supabase.rpc('set_member_status', { p_user: r.target_user_id, p_status: 'banned', p_reason: r.reason })
+    if (error) setError(/original/.test(error.message) ? 'The owner cannot be removed.' : /own status/.test(error.message) ? 'You cannot remove yourself.' : 'Could not remove that member (they may already be removed).')
+    else await supabase.from('reports').update({ status: 'reviewed' }).eq('id', r.id)
+    setBusy(null); await load()
+  }
+
+  const describe = (l: LogRow): string => {
+    const a = who(l.actor_id), t = who(l.target_id)
+    switch (l.action) {
+      case 'application_approved': return `${a} approved ${t}`
+      case 'application_rejected': return `${a} declined ${t}`
+      case 'member_banned': return `${a} removed ${t}`
+      case 'member_approved': return `${a} restored ${t}`
+      case 'message_moderated': return `${a} deleted a reported message`
+      case 'role_changed': return `${t} was made an ordinary member`
+      case 'group_deleted': return `${a} deleted a group chat`
+      case 'bootstrap_first_admin': return `${a} became the first admin`
+      case 'recover_original_admin': return `${a} recovered owner access`
+      case 'admin_token_failed': return `${a} entered a wrong setup token`
+      default: return `${a}: ${l.action}`
+    }
+  }
+
+  const shown = (reports ?? []).filter((r) => (showDone ? r.status !== 'open' : r.status === 'open'))
+  return (
+    <section className="mx-auto w-full max-w-3xl p-4 pb-10 sm:p-8">
+      <h2 className="font-display text-2xl font-bold">Moderation</h2>
+      <p className="mt-1 text-sm text-mute">Reports from members, and a record of admin actions.</p>
+      <div role="tablist" className="mt-5 inline-flex rounded-xl border border-white/10 p-1 text-sm">
+        {([['reports', 'Reports'], ['activity', 'Activity log']] as ['reports' | 'activity', string][]).map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)} className={`rounded-lg px-4 py-1.5 font-medium transition ${tab === id ? 'bg-white/10 text-fg' : 'text-mute hover:text-fg'}`}>{label}</button>
+        ))}
+      </div>
+      {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
+
+      {tab === 'reports' && (
+        <>
+          <label className="mt-4 flex items-center gap-2 text-sm text-mute"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} />Show handled reports</label>
+          {reports === null && <div className="mt-4 h-24 animate-pulse rounded-2xl bg-white/5" />}
+          {reports && shown.length === 0 && <p className="mt-8 text-center text-sm text-mute">{showDone ? 'No handled reports yet.' : 'No open reports. Nice and quiet.'}</p>}
+          <ul className="mt-4 space-y-3">
+            {shown.map((r) => (
+              <li key={r.id} className="panel !rounded-2xl p-4">
+                <p className="text-sm"><strong>{who(r.reporter_id)}</strong> reported <strong>{who(r.target_user_id)}</strong></p>
+                <p className="mt-0.5 text-xs text-mute">{new Date(r.created_at).toLocaleString()}{r.status !== 'open' ? ` · ${r.status}` : ''}</p>
+                <p className="mt-2 text-sm"><span className="text-mute">Reason: </span>{r.reason}</p>
+                {r.snapshot && <blockquote className="mt-2 break-words rounded-xl border-l-2 border-accent bg-white/5 px-3 py-2 text-sm">{r.snapshot}</blockquote>}
+                {r.status === 'open' && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {r.message_id && <button className="btn-quiet !py-1.5 text-sm text-bad" disabled={busy === r.id} onClick={() => deleteMessage(r)}>Delete message</button>}
+                    {r.target_user_id && <button className="btn-quiet !py-1.5 text-sm text-bad" disabled={busy === r.id} onClick={() => removeMember(r)}>Remove member</button>}
+                    <button className="btn-quiet !py-1.5 text-sm" disabled={busy === r.id} onClick={() => setStatus(r, 'reviewed')}>Mark handled</button>
+                    <button className="btn-quiet !py-1.5 text-sm" disabled={busy === r.id} onClick={() => setStatus(r, 'dismissed')}>Dismiss</button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {tab === 'activity' && (
+        <ul className="mt-4 divide-y divide-white/5 rounded-2xl border border-white/10">
+          {logs === null && <li className="h-16 animate-pulse bg-white/5" />}
+          {logs && logs.length === 0 && <li className="p-4 text-sm text-mute">Nothing recorded yet.</li>}
+          {(logs ?? []).map((l) => (
+            <li key={l.id} className="flex items-start gap-3 px-4 py-3 text-sm"><span className="min-w-0 flex-1 break-words">{describe(l)}</span><span className="shrink-0 text-xs text-mute">{new Date(l.created_at).toLocaleString()}</span></li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 // ---- src/features/auth/AuthScreen.tsx ----
 
 function AuthScreen() {
@@ -2588,7 +2994,8 @@ function PendingScreen() {
 
 // ---- src/components/Shell.tsx ----
 
-type View = 'chats' | 'projects' | 'library' | 'ai' | 'settings' | 'inbox' | 'members'
+type View = 'chats' | 'projects' | 'library' | 'ai' | 'settings' | 'inbox' | 'members' | 'moderation'
+interface MsgHit { id: string; conversation_id: string; sender_id: string; content: string; created_at: string }
 interface Toast { id: number; title: string; body: string; convId: string }
 
 function shortTime(iso: string | null): string {
@@ -2603,7 +3010,7 @@ function shortTime(iso: string | null): string {
 function Shell() {
   const { profile, session, isAdmin, signOut } = useAuth()
   const me = session!.user.id
-  const { users } = useDirectory()
+  const { users, list, online } = useDirectory()
   const [view, setView] = useState<View>('chats')
   const [showContent, setShowContent] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -2612,6 +3019,10 @@ function Shell() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [pendingCount, setPendingCount] = useState(0)
+  const [reportCount, setReportCount] = useState(0)
+  const [msgHits, setMsgHits] = useState<MsgHit[]>([])
+  const searchRef = useRef<HTMLInputElement>(null)
+  const myNameRef = useRef(profile?.username); myNameRef.current = profile?.username
   const [showNew, setShowNew] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
 
@@ -2636,6 +3047,8 @@ function Shell() {
     if (!isAdmin) return
     const { count } = await supabase.from('approval_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending')
     setPendingCount(count ?? 0)
+    const { count: reports } = await supabase.from('reports').select('id', { count: 'exact', head: true }).eq('status', 'open')
+    setReportCount(reports ?? 0)
   }, [isAdmin])
 
   useEffect(() => {
@@ -2647,7 +3060,9 @@ function Shell() {
         const m = p.new as { id: string; conversation_id: string; sender_id: string; content: string; message_type: string }
         if (m.sender_id === me || m.message_type === 'assistant') return
         const c = convosRef.current?.find((x) => x.id === m.conversation_id)
-        if (c?.muted) return
+        const myName = myNameRef.current
+        const mentioned = !!myName && new RegExp(`@${myName}\\b`, 'i').test(m.content ?? '')
+        if (c?.muted && !mentioned) return
         const st = stateRef.current
         const viewing = document.visibilityState === 'visible' && st.view === 'chats' && st.selectedId === m.conversation_id
         if (viewing) return
@@ -2657,7 +3072,7 @@ function Shell() {
         const what = m.message_type === 'system' ? (m.content === 'started a video call' ? 'started a video call' : m.content)
           : m.message_type === 'gif' ? 'sent a GIF' : m.message_type === 'image' ? 'sent a photo' : m.message_type === 'video' ? 'sent a video' : m.message_type === 'file' ? 'sent a file'
           : prefs.preview ? m.content : 'sent a message'
-        const body = `${who}: ${what}`
+        const body = mentioned ? `${who} mentioned you${prefs.preview ? `: ${m.content}` : ''}` : `${who}: ${what}`
         if (prefs.sound) beep()
         if (document.visibilityState === 'hidden' && prefs.browser) showNotification(chat, body, () => { setSelectedId(m.conversation_id); setView('chats'); setShowContent(true) })
         else if (document.visibilityState === 'visible') {
@@ -2668,7 +3083,7 @@ function Shell() {
       })
       .subscribe()
     // New groups you are added to have no message yet, so refresh the list periodically and when the tab regains focus.
-    const poll = setInterval(() => { void loadConvos() }, 30_000)
+    const poll = setInterval(() => { void loadConvos(); void loadPending() }, 30_000)
     const onVisible = () => { if (document.visibilityState === 'visible') void loadConvos() }
     document.addEventListener('visibilitychange', onVisible)
     return () => { clearInterval(poll); document.removeEventListener('visibilitychange', onVisible); void supabase.removeChannel(ch) }
@@ -2693,9 +3108,40 @@ function Shell() {
 
   stateRef.current = { view, selectedId, titleOf }
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault(); setShowContent(false); setTimeout(() => searchRef.current?.focus(), 0)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) { setMsgHits([]); return }
+    let live = true
+    const t = setTimeout(async () => {
+      const esc = q.replace(/[\\%_]/g, (ch) => '\\' + ch)
+      const { data } = await supabase.from('messages').select('id, conversation_id, sender_id, content, created_at')
+        .ilike('content', `%${esc}%`).is('deleted_at', null).eq('message_type', 'text').order('created_at', { ascending: false }).limit(15)
+      if (live) setMsgHits((data as MsgHit[] | null) ?? [])
+    }, 300)
+    return () => { live = false; clearTimeout(t) }
+  }, [query])
+
+  async function startWith(id: string) {
+    const { data, error } = await supabase.rpc('get_or_create_direct', { p_other: id })
+    if (!error && data) { setQuery(''); open(data as string) }
+  }
+
   const go = (v: View) => { setView(v); setShowContent(true); setMenuOpen(false) }
   const open = (id: string) => { setShowNew(false); setSelectedId(id); setView('chats'); setShowContent(true); void loadConvos() }
 
+  const qLower = query.trim().toLowerCase()
+  const peopleHits = qLower ? list.filter((u) => u.id !== me && `${u.display_name} ${u.username}`.toLowerCase().includes(qLower)).slice(0, 6) : []
+  const messageHits = msgHits.filter((h) => convos?.some((c) => c.id === h.conversation_id))
   const shown = (convos ?? []).filter((c) => titleOf(c).toLowerCase().includes(query.toLowerCase()))
   const selected = convos?.find((c) => c.id === selectedId) ?? null
   const totalUnread = (convos ?? []).reduce((n, c) => n + (c.muted ? 0 : c.unread_count), 0)
@@ -2709,6 +3155,7 @@ function Shell() {
     { id: 'ai', label: 'AI Assistant', icon: Sparkles, show: true },
     { id: 'settings', label: 'Settings', icon: Settings, show: true },
     { id: 'inbox', label: 'Admin Bot', icon: ShieldCheck, badge: pendingCount, show: isAdmin },
+    { id: 'moderation', label: 'Moderation', icon: Flag, badge: reportCount, show: isAdmin },
     { id: 'members', label: 'Members', icon: Users, show: isAdmin },
   ]
   const Nav = ({ onPick }: { onPick: (v: View) => void }) => (
@@ -2747,7 +3194,7 @@ function Shell() {
         <div className="px-3 md:px-4">
           <label className="relative block">
             <Search size={16} className="pointer-events-none absolute left-3.5 top-3.5 text-mute" />
-            <input className="field pl-10" placeholder="Search chats" aria-label="Search chats" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <input ref={searchRef} className="field pl-10" placeholder="Search chats, people, messages" aria-label="Search chats, people and messages" value={query} onChange={(e) => setQuery(e.target.value)} />
           </label>
         </div>
 
@@ -2767,7 +3214,7 @@ function Shell() {
               <button key={c.id} onClick={() => { setSelectedId(c.id); setView('chats'); setShowContent(true) }}
                 className={`relative flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition ${active ? 'bg-white/[0.08]' : 'hover:bg-white/[0.05]'}`}>
                 {active && <span className="absolute left-0 top-3 h-[calc(100%-1.5rem)] w-1 rounded-full bg-accent" />}
-                <Avatar path={avatarOf(c)} name={titleOf(c)} size={46} />
+                <span className="relative shrink-0"><Avatar path={avatarOf(c)} name={titleOf(c)} size={46} />{c.type === 'direct' && online.has(otherOf[c.id]) && <span className="absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-surface bg-ok" aria-label="Online" />}</span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline justify-between gap-2">
                     <span className={`truncate text-sm ${c.unread_count > 0 ? 'font-semibold' : 'font-medium'}`}>{titleOf(c)}</span>
@@ -2781,6 +3228,31 @@ function Shell() {
               </button>
             )
           })}
+          {peopleHits.length > 0 && (
+            <div className="mt-2">
+              <p className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-mute">People</p>
+              {peopleHits.map((u) => (
+                <button key={u.id} onClick={() => void startWith(u.id)} className="flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition hover:bg-white/[0.05]">
+                  <span className="relative shrink-0"><Avatar path={u.avatar_path} name={u.display_name} size={38} />{online.has(u.id) && <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-surface bg-ok" aria-label="Online" />}</span>
+                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{u.display_name}</span><span className="block truncate text-xs text-mute">@{u.username} · message</span></span>
+                </button>
+              ))}
+            </div>
+          )}
+          {messageHits.length > 0 && (
+            <div className="mt-2">
+              <p className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-mute">Messages</p>
+              {messageHits.map((h) => {
+                const c = convos?.find((x) => x.id === h.conversation_id)!
+                return (
+                  <button key={h.id} onClick={() => { setSelectedId(h.conversation_id); setView('chats'); setShowContent(true); setQuery('') }} className="block w-full rounded-2xl px-3 py-2.5 text-left transition hover:bg-white/[0.05]">
+                    <span className="flex items-baseline justify-between gap-2"><span className="truncate text-sm font-medium">{titleOf(c)}</span><span className="shrink-0 text-[11px] text-mute">{shortTime(h.created_at)}</span></span>
+                    <span className="mt-0.5 line-clamp-2 break-words text-xs text-mute"><span className="text-fg/80">{h.sender_id === me ? 'You' : (users[h.sender_id]?.display_name ?? 'Someone')}: </span>{h.content}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div className="hidden border-t border-white/5 p-3 md:block"><Me /></div>
@@ -2792,6 +3264,11 @@ function Shell() {
           <div className="min-h-0 flex-1 overflow-y-auto">
             <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
             <AdminInbox />
+          </div>
+        ) : view === 'moderation' && isAdmin ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <button className="m-3 flex items-center gap-2 rounded-xl p-2 text-sm text-mute hover:bg-white/5 md:hidden" onClick={() => setShowContent(false)}><ArrowLeft size={16} />Back</button>
+            <ModerationView />
           </div>
         ) : view === 'members' && isAdmin ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
